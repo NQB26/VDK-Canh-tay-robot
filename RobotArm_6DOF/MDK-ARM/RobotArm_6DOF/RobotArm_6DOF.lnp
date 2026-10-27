@@ -1,0 +1,26 @@
+--cpu=Cortex-M4.fp.sp
+"robotarm_6dof\startup_stm32f411xe.o"
+"robotarm_6dof\main.o"
+"robotarm_6dof\stm32f4xx_it.o"
+"robotarm_6dof\stm32f4xx_hal_msp.o"
+"robotarm_6dof\stm32f4xx_hal_tim.o"
+"robotarm_6dof\stm32f4xx_hal_tim_ex.o"
+"robotarm_6dof\stm32f4xx_hal_rcc.o"
+"robotarm_6dof\stm32f4xx_hal_rcc_ex.o"
+"robotarm_6dof\stm32f4xx_hal_flash.o"
+"robotarm_6dof\stm32f4xx_hal_flash_ex.o"
+"robotarm_6dof\stm32f4xx_hal_flash_ramfunc.o"
+"robotarm_6dof\stm32f4xx_hal_gpio.o"
+"robotarm_6dof\stm32f4xx_hal_dma_ex.o"
+"robotarm_6dof\stm32f4xx_hal_dma.o"
+"robotarm_6dof\stm32f4xx_hal_pwr.o"
+"robotarm_6dof\stm32f4xx_hal_pwr_ex.o"
+"robotarm_6dof\stm32f4xx_hal_cortex.o"
+"robotarm_6dof\stm32f4xx_hal.o"
+"robotarm_6dof\stm32f4xx_hal_exti.o"
+"robotarm_6dof\stm32f4xx_hal_uart.o"
+"robotarm_6dof\system_stm32f4xx.o"
+--strict --scatter "RobotArm_6DOF\RobotArm_6DOF.sct"
+--summary_stderr --info summarysizes --map --load_addr_map_info --xref --callgraph --symbols
+--info sizes --info totals --info unused --info veneers
+--list "RobotArm_6DOF.map" -o RobotArm_6DOF\RobotArm_6DOF.axf
