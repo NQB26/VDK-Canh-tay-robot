@@ -21,17 +21,42 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
+/* Kenh nhan lenh UART: DMA vong (circular) + bo dem dong lenh */
+typedef struct
+{
+  UART_HandleTypeDef *huart;
+  uint8_t dma_buf[128];       /* bo dem DMA vong */
+  uint16_t rd;                /* chi so doc cua CPU */
+  char line[96];              /* dong lenh dang ghep */
+  uint8_t line_len;
+  uint8_t overflow;           /* dong qua dai -> bo qua */
+  volatile uint8_t restart;   /* bao loi UART -> khoi dong lai DMA */
+} UartRx_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define NUM_SERVO         6
+#define RX_DMA_SIZE       128
+#define LINE_MAX_LEN      96
 
+/* Do rong xung servo (us) ung voi 0 va 180 do.
+ * Giu 1000..2000 giong project RobotArm (F103). Neu servo quay du 180 do
+ * voi 500..2500 thi doi lai o day. */
+#define SERVO_MIN_US      1000
+#define SERVO_MAX_US      2000
+
+#define SERVO_TICK_S      0.01f   /* TIM2 = 100 Hz (10 ms) */
+#define SPEED_MIN_DPS     5.0f
+#define SPEED_MAX_DPS     720.0f
+#define SPEED_DEFAULT_DPS 90.0f
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -50,7 +75,18 @@ DMA_HandleTypeDef hdma_usart1_rx;
 DMA_HandleTypeDef hdma_usart2_rx;
 
 /* USER CODE BEGIN PV */
+static UartRx_t rx_ble;   /* USART1: module BLE (dien thoai) */
+static UartRx_t rx_pc;    /* USART2: laptop / cau noi USB-UART */
 
+static float servo_target[NUM_SERVO]  = {90, 90, 90, 90, 90, 90};
+static float servo_current[NUM_SERVO] = {90, 90, 90, 90, 90, 90};
+
+/* Gioi han goc an toan tung khop (do). Chinh theo co khi cua canh tay
+ * de tranh dam vao chan de / tu va cham. */
+static const float servo_min[NUM_SERVO] = {0, 0, 0, 0, 0, 0};
+static const float servo_max[NUM_SERVO] = {180, 180, 180, 180, 180, 180};
+
+static volatile float max_speed_dps = SPEED_DEFAULT_DPS;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -63,12 +99,178 @@ static void MX_TIM4_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN PFP */
-
+static void Servo_Write(uint8_t idx, float deg);
+static void UartRx_Start(UartRx_t *ch);
+static void UartRx_Poll(UartRx_t *ch);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+static float Clampf(float v, float lo, float hi)
+{
+  if (v < lo) return lo;
+  if (v > hi) return hi;
+  return v;
+}
+
+static void Servo_Write(uint8_t idx, float deg)
+{
+  uint32_t pulse;
+
+  deg = Clampf(deg, 0.0f, 180.0f);
+  pulse = SERVO_MIN_US + (uint32_t)((deg / 180.0f) * (float)(SERVO_MAX_US - SERVO_MIN_US));
+
+  switch (idx)
+  {
+    case 0: __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, pulse); break; /* SERVO_1 PA6 */
+    case 1: __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, pulse); break; /* SERVO_2 PA7 */
+    case 2: __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, pulse); break; /* SERVO_3 PB0 */
+    case 3: __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_4, pulse); break; /* SERVO_4 PB1 */
+    case 4: __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, pulse); break; /* SERVO_5 PB6 */
+    case 5: __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2, pulse); break; /* SERVO_6 PB7 */
+    default: break;
+  }
+}
+
+static void Servo_SetTarget(uint8_t idx, float deg)
+{
+  if (idx >= NUM_SERVO) return;
+  servo_target[idx] = Clampf(deg, servo_min[idx], servo_max[idx]);
+}
+
+/* Doc 6 so thuc cach nhau boi dau ',' -> out[]. Tra ve 1 neu hop le. */
+static uint8_t Parse6(const char *s, float out[NUM_SERVO])
+{
+  char *end;
+  double v;
+  uint8_t i;
+
+  for (i = 0; i < NUM_SERVO; i++)
+  {
+    v = strtod(s, &end);
+    if (end == s || v != v) return 0;   /* khong co so, hoac NaN */
+    out[i] = (float)v;
+    s = end;
+    if (i < NUM_SERVO - 1)
+    {
+      if (*s != ',') return 0;
+      s++;
+    }
+  }
+  return 1;
+}
+
+/* Cac lenh (ket thuc bang '\n', giao thuc cu cua RobotArm van dung duoc):
+ *   a1,a2,a3,a4,a5,a6   dat goc muc tieu 6 servo (do), vd "90,45.5,120,90,90,30"
+ *   Sn:goc              dat 1 servo, n = 1..6,        vd "S3:135"
+ *   Vtoc_do             toc do toi da (do/giay),      vd "V90"
+ */
+static void Cmd_Process(const char *line)
+{
+  float a[NUM_SERVO];
+  uint8_t i;
+
+  if (line[0] == 'S' || line[0] == 's')
+  {
+    char *end;
+    long n = strtol(line + 1, &end, 10);
+    if (end != line + 1 && *end == ':' && n >= 1 && n <= NUM_SERVO)
+    {
+      double v = strtod(end + 1, &end);
+      if (v == v) Servo_SetTarget((uint8_t)(n - 1), (float)v);
+    }
+  }
+  else if (line[0] == 'V' || line[0] == 'v')
+  {
+    char *end;
+    double v = strtod(line + 1, &end);
+    if (end != line + 1 && v == v)
+    {
+      max_speed_dps = Clampf((float)v, SPEED_MIN_DPS, SPEED_MAX_DPS);
+    }
+  }
+  else if (Parse6(line, a))
+  {
+    for (i = 0; i < NUM_SERVO; i++) Servo_SetTarget(i, a[i]);
+  }
+}
+
+static void UartRx_Start(UartRx_t *ch)
+{
+  ch->rd = 0;
+  ch->line_len = 0;
+  ch->overflow = 0;
+  ch->restart = 0;
+  HAL_UART_Receive_DMA(ch->huart, ch->dma_buf, RX_DMA_SIZE);
+}
+
+/* Goi lien tuc trong vong lap chinh: lay byte moi tu bo dem DMA vong,
+ * ghep thanh dong, gap '\n' thi xu ly lenh. */
+static void UartRx_Poll(UartRx_t *ch)
+{
+  uint16_t head;
+  uint8_t c;
+
+  if (ch->restart)
+  {
+    UartRx_Start(ch);
+    return;
+  }
+
+  head = (uint16_t)(RX_DMA_SIZE - __HAL_DMA_GET_COUNTER(ch->huart->hdmarx));
+  while (ch->rd != head)
+  {
+    c = ch->dma_buf[ch->rd];
+    ch->rd = (uint16_t)((ch->rd + 1) % RX_DMA_SIZE);
+
+    if (c == '\n' || c == '\r')
+    {
+      if (ch->line_len > 0 && !ch->overflow)
+      {
+        ch->line[ch->line_len] = '\0';
+        Cmd_Process(ch->line);
+      }
+      ch->line_len = 0;
+      ch->overflow = 0;
+    }
+    else if (ch->line_len < LINE_MAX_LEN - 1)
+    {
+      ch->line[ch->line_len++] = (char)c;
+    }
+    else
+    {
+      ch->overflow = 1;
+    }
+  }
+}
+
+/* Loi UART (overrun/noise/framing): HAL dung DMA -> danh dau de khoi dong lai */
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+  if (huart->Instance == USART1) rx_ble.restart = 1;
+  else if (huart->Instance == USART2) rx_pc.restart = 1;
+}
+
+/* TIM2 100 Hz: dua goc hien tai tien dan toi goc muc tieu voi toc do toi da
+ * max_speed_dps -> servo chuyen dong mem, khong giat khi keo thanh truot. */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  uint8_t i;
+  float step, diff;
+
+  if (htim->Instance != TIM2) return;
+
+  step = max_speed_dps * SERVO_TICK_S;
+  for (i = 0; i < NUM_SERVO; i++)
+  {
+    diff = servo_target[i] - servo_current[i];
+    if (diff > step)       servo_current[i] += step;
+    else if (diff < -step) servo_current[i] -= step;
+    else                   servo_current[i] = servo_target[i];
+    Servo_Write(i, servo_current[i]);
+  }
+}
 /* USER CODE END 0 */
 
 /**
@@ -114,6 +316,21 @@ int main(void)
 
 	HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_1);
 	HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_2);
+
+  /* Dua servo ve vi tri ban dau (90 do) */
+  {
+    uint8_t i;
+    for (i = 0; i < NUM_SERVO; i++) Servo_Write(i, servo_current[i]);
+  }
+
+  /* Nhan lenh tu BLE (USART1) va laptop (USART2) bang DMA vong */
+  rx_ble.huart = &huart1;
+  rx_pc.huart  = &huart2;
+  UartRx_Start(&rx_ble);
+  UartRx_Start(&rx_pc);
+
+  /* TIM2 100 Hz: cap nhat chuyen dong mem */
+  HAL_TIM_Base_Start_IT(&htim2);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -123,6 +340,8 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    UartRx_Poll(&rx_ble);
+    UartRx_Poll(&rx_pc);
   }
   /* USER CODE END 3 */
 }
