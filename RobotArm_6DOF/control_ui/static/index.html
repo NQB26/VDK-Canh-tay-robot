@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#0f1318">
+<title>Điều khiển cánh tay robot 6DOF</title>
+<style>
+  :root {
+    --bg: #0f1318; --panel: #181e26; --panel2: #202833; --line: #2c3541;
+    --text: #e8edf3; --muted: #93a0b0; --accent: #3d9bff; --ok: #2fbf71; --bad: #ef5350; --warn: #f0b429;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body {
+    font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+    overscroll-behavior: none;
+  }
+  .app { max-width: 760px; margin: 0 auto; padding: 12px; }
+  h1 { font-size: 1.15rem; margin: 4px 0 10px; font-weight: 650; }
+
+  .status { display: flex; flex-wrap: wrap; gap: 6px 8px; margin-bottom: 12px; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 999px;
+    font-size: .8rem; color: var(--muted);
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); flex: none; }
+  .pill.ok .dot { background: var(--ok); }
+  .pill.warn .dot { background: var(--warn); }
+  .pill.ok, .pill.warn { color: var(--text); }
+
+  .tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 12px; }
+  .tabs button {
+    padding: 10px; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--panel); color: var(--muted); font: inherit; font-weight: 600; cursor: pointer;
+  }
+  .tabs button[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px; margin-bottom: 12px; }
+  .card h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+  [hidden] { display: none !important; }
+
+  /* Thanh trượt */
+  .joint { display: grid; grid-template-columns: 112px 1fr 48px; align-items: center; gap: 10px; padding: 7px 0; }
+  .joint + .joint { border-top: 1px solid var(--line); }
+  .joint label { font-size: .95rem; }
+  .joint output { text-align: right; font-variant-numeric: tabular-nums; color: var(--accent); font-weight: 600; }
+  input[type=range] { width: 100%; height: 34px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+
+  /* Joystick */
+  .sticks { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .stickbox { display: flex; flex-direction: column; align-items: center; gap: 10px; min-width: 0; }
+  .stickbox h3 { margin: 0; font-size: .85rem; color: var(--muted); font-weight: 600; }
+  .pad {
+    position: relative; width: min(100%, 230px); aspect-ratio: 1; border-radius: 50%;
+    background:
+      linear-gradient(var(--line), var(--line)) center / 1px 100% no-repeat,
+      linear-gradient(var(--line), var(--line)) center / 100% 1px no-repeat,
+      radial-gradient(circle, var(--panel2) 0 62%, #151b22 63% 100%);
+    border: 2px solid var(--line); touch-action: none; cursor: grab;
+  }
+  .knob {
+    position: absolute; left: 50%; top: 50%; width: 30%; height: 30%; margin: -15% 0 0 -15%;
+    border-radius: 50%; background: var(--accent); box-shadow: 0 2px 10px rgba(0,0,0,.5);
+    pointer-events: none;
+  }
+  .map { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 6px; width: 100%; font-size: .85rem; color: var(--muted); }
+  .map select {
+    min-width: 0; width: 100%; padding: 6px 4px; font: inherit; font-size: 16px; color: var(--text);
+    background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
+  }
+  .map label.inv { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+
+  .holds { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 14px; }
+  .holdgrp { display: flex; flex-direction: column; gap: 6px; }
+  .holdgrp span { font-size: .85rem; color: var(--muted); text-align: center; }
+  .holdbtns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .hold {
+    padding: 14px 0; font: inherit; font-size: 1.2rem; font-weight: 700; color: var(--text);
+    background: var(--panel2); border: 1px solid var(--line); border-radius: 12px; touch-action: none; cursor: pointer;
+  }
+  .hold.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  .readout { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; margin-top: 14px; }
+  .chip { background: var(--panel2); border-radius: 8px; padding: 5px 2px; text-align: center; font-size: .7rem; color: var(--muted); }
+  .chip b { display: block; color: var(--text); font-size: .95rem; font-variant-numeric: tabular-nums; }
+
+  .row { display: grid; grid-template-columns: 112px 1fr 64px; align-items: center; gap: 10px; }
+  .row output { text-align: right; font-variant-numeric: tabular-nums; color: var(--accent); font-weight: 600; }
+  .btn {
+    width: 100%; margin-top: 12px; padding: 12px; font: inherit; font-weight: 650; color: var(--text);
+    background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; cursor: pointer;
+  }
+  .btn:active { background: var(--accent); border-color: var(--accent); }
+  .hint { font-size: .8rem; color: var(--muted); margin: 6px 2px 0; }
+
+  @media (max-width: 420px) {
+    .joint, .row { grid-template-columns: 92px 1fr 44px; gap: 6px; }
+    .map { grid-template-columns: auto 1fr; }
+    .map label.inv { grid-column: 2; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <h1>Điều khiển cánh tay robot 6DOF</h1>
+
+  <div class="status" aria-live="polite">
+    <span class="pill" id="pillWs"><i class="dot"></i><span>Máy chủ: đang kết nối…</span></span>
+    <span class="pill" id="pillSerial"><i class="dot"></i><span>STM32: —</span></span>
+    <span class="pill" id="pillPad" hidden><i class="dot"></i><span></span></span>
+  </div>
+
+  <div class="tabs" role="tablist">
+    <button role="tab" id="tabSliders" aria-selected="true">Thanh trượt</button>
+    <button role="tab" id="tabJoy" aria-selected="false">Joystick</button>
+  </div>
+
+  <section class="card" id="panelSliders">
+    <h2>Góc từng khớp (0–180°)</h2>
+    <div id="sliders"></div>
+  </section>
+
+  <section class="card" id="panelJoy" hidden>
+    <h2>Joystick — kéo cần để quay khớp, thả tay thì dừng</h2>
+    <div class="sticks" id="sticks"></div>
+    <div class="holds" id="holds"></div>
+    <div class="readout" id="readout"></div>
+    <p class="hint" id="padHint">Tay cầm Xbox/PS: cần trái/phải = 2 joystick, LB/RB = cổ tay xoay −/+, LT/RT = kẹp −/+, A = về vị trí gốc.</p>
+  </section>
+
+  <section class="card">
+    <h2>Chung</h2>
+    <div class="row">
+      <label for="speed">Tốc độ servo</label>
+      <input type="range" id="speed" min="10" max="360" step="5" value="90">
+      <output id="speedOut" for="speed">90°/s</output>
+    </div>
+    <button class="btn" id="home" type="button">Về vị trí gốc (90°)</button>
+  </section>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  /* Cấu hình khớp: sửa min/max cho khớp với giới hạn cơ khí của cánh tay
+     (nên đặt cùng giá trị với servo_min/servo_max trong firmware). */
+  const JOINTS = [
+    { name: "Đế (xoay)",     short: "Đế",   min: 0, max: 180, home: 90 },
+    { name: "Vai",           short: "Vai",  min: 0, max: 180, home: 90 },
+    { name: "Khuỷu",         short: "Khuỷu", min: 0, max: 180, home: 90 },
+    { name: "Cổ tay (gập)",  short: "Gập",  min: 0, max: 180, home: 90 },
+    { name: "Cổ tay (xoay)", short: "Xoay", min: 0, max: 180, home: 90 },
+    { name: "Kẹp",           short: "Kẹp",  min: 0, max: 180, home: 90 },
+  ];
+  const N = JOINTS.length;
+  /* Mặc định: cần trái = Đế (X) + Vai (Y); cần phải = Cổ tay gập (X) + Khuỷu (Y) */
+  const STICK_DEFAULTS = [
+    { x: 0, y: 1, name: "Cần trái" },
+    { x: 3, y: 2, name: "Cần phải" },
+  ];
+  /* Nút giữ: khớp 4 (cổ tay xoay) và 5 (kẹp) */
+  const HOLD_JOINTS = [4, 5];
+  const JOY_RATE = 0.8;      /* tốc độ joystick = 80% tốc độ servo để servo luôn theo kịp */
+  const SEND_MS = 33;        /* ~30 lệnh/giây */
+
+  const $ = (id) => document.getElementById(id);
+  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+  const round1 = (v) => Math.round(v * 10) / 10;
+
+  /* ---------- Trạng thái ---------- */
+  const angles = JOINTS.map((j) => j.home);
+  let speed = 90;
+  let dirty = false, speedDirty = false;
+  let lastLocalEdit = 0;
+  let mode = "sliders";
+
+  /* ---------- Dựng giao diện ---------- */
+  const sliderEls = [], outEls = [], chipEls = [];
+
+  JOINTS.forEach((j, i) => {
+    const row = document.createElement("div");
+    row.className = "joint";
+    const id = "sl" + i;
+    row.innerHTML = `<label for="${id}">${j.name}</label>
+      <input type="range" id="${id}" min="${j.min}" max="${j.max}" step="1" value="${j.home}">
+      <output for="${id}">${j.home}°</output>`;
+    $("sliders").appendChild(row);
+    const input = row.querySelector("input");
+    sliderEls[i] = input;
+    outEls[i] = row.querySelector("output");
+    input.addEventListener("input", () => setAngle(i, +input.value));
+
+    const chip = document.createElement("div");
+    chip.className = "chip";
+    chip.innerHTML = `${j.short}<b>${j.home}°</b>`;
+    $("readout").appendChild(chip);
+    chipEls[i] = chip.querySelector("b");
+  });
+
+  function renderJoint(i) {
+    const v = Math.round(angles[i]);
+    sliderEls[i].value = v;
+    outEls[i].textContent = v + "°";
+    chipEls[i].textContent = v + "°";
+  }
+
+  function setAngle(i, v, local = true) {
+    v = clamp(v, JOINTS[i].min, JOINTS[i].max);
+    if (v === angles[i]) return;
+    angles[i] = v;
+    renderJoint(i);
+    if (local) { dirty = true; lastLocalEdit = performance.now(); }
+  }
+
+  function applyRemoteAngles(a) {
+    if (!Array.isArray(a) || a.length !== N) return;
+    a.forEach((v, i) => { if (typeof v === "number") setAngle(i, v, false); });
+  }
+
+  function applySpeed(v) {
+    if (typeof v !== "number") return;
+    speed = v;
+    $("speed").value = v;
+    $("speedOut").textContent = v + "°/s";
+  }
+
+  /* ---------- Joystick ảo ---------- */
+  const optionsHtml = '<option value="-1">— không dùng</option>' +
+    JOINTS.map((j, i) => `<option value="${i}">${j.name}</option>`).join("");
+
+  const sticks = STICK_DEFAULTS.map((def, s) => {
+    const box = document.createElement("div");
+    box.className = "stickbox";
+    box.innerHTML = `<h3>${def.name}</h3>
+      <div class="pad"><div class="knob"></div></div>
+      <div class="map"><span>X ↔</span><select class="selx" aria-label="${def.name}: khớp trục X">${optionsHtml}</select>
+        <label class="inv"><input type="checkbox" class="invx">đảo</label></div>
+      <div class="map"><span>Y ↕</span><select class="sely" aria-label="${def.name}: khớp trục Y">${optionsHtml}</select>
+        <label class="inv"><input type="checkbox" class="invy">đảo</label></div>`;
+    $("sticks").appendChild(box);
+
+    const pad = box.querySelector(".pad"), knob = box.querySelector(".knob");
+    const selx = box.querySelector(".selx"), sely = box.querySelector(".sely");
+    selx.value = def.x; sely.value = def.y;
+    const st = { x: 0, y: 0, id: null, selx, sely,
+                 invx: box.querySelector(".invx"), invy: box.querySelector(".invy") };
+
+    function move(e) {
+      const r = pad.getBoundingClientRect();
+      const R = r.width / 2;
+      const travel = R - knob.offsetWidth / 2;
+      let dx = e.clientX - (r.left + R), dy = e.clientY - (r.top + R);
+      const d = Math.hypot(dx, dy);
+      if (d > travel) { dx *= travel / d; dy *= travel / d; }
+      knob.style.transform = `translate(${dx}px, ${dy}px)`;
+      st.x = dx / travel;
+      st.y = -dy / travel;
+    }
+    function end(e) {
+      if (e.pointerId !== st.id) return;
+      st.id = null; st.x = 0; st.y = 0;
+      knob.style.transform = "";
+    }
+    pad.addEventListener("pointerdown", (e) => {
+      if (st.id !== null) return;
+      st.id = e.pointerId;
+      pad.setPointerCapture(e.pointerId);
+      move(e);
+      e.preventDefault();
+    });
+    pad.addEventListener("pointermove", (e) => { if (e.pointerId === st.id) move(e); });
+    pad.addEventListener("pointerup", end);
+    pad.addEventListener("pointercancel", end);
+    pad.addEventListener("lostpointercapture", end);
+    pad.addEventListener("contextmenu", (e) => e.preventDefault());
+    return st;
+  });
+
+  /* Nút giữ (cổ tay xoay, kẹp) */
+  const held = new Set();
+  HOLD_JOINTS.forEach((j) => {
+    const g = document.createElement("div");
+    g.className = "holdgrp";
+    g.innerHTML = `<span>${JOINTS[j].name}</span>
+      <div class="holdbtns">
+        <button type="button" class="hold" data-j="${j}" data-d="-1" aria-label="${JOINTS[j].name} giảm">−</button>
+        <button type="button" class="hold" data-j="${j}" data-d="1" aria-label="${JOINTS[j].name} tăng">+</button>
+      </div>`;
+    $("holds").appendChild(g);
+  });
+  document.querySelectorAll(".hold").forEach((b) => {
+    const release = () => { held.delete(b); b.classList.remove("on"); };
+    b.addEventListener("pointerdown", (e) => {
+      b.setPointerCapture(e.pointerId);
+      held.add(b); b.classList.add("on");
+      e.preventDefault();
+    });
+    b.addEventListener("pointerup", release);
+    b.addEventListener("pointercancel", release);
+    b.addEventListener("lostpointercapture", release);
+    b.addEventListener("contextmenu", (e) => e.preventDefault());
+  });
+
+  /* ---------- Tay cầm vật lý (Gamepad API) ---------- */
+  const dz = (v) => (Math.abs(v) < 0.15 ? 0 : (v - Math.sign(v) * 0.15) / 0.85);
+  let padName = null, homeWasDown = false;
+
+  function readGamepad() {
+    const out = { s: [{ x: 0, y: 0 }, { x: 0, y: 0 }], hold: [0, 0], home: false, name: null };
+    if (typeof navigator.getGamepads !== "function") return out;
+    for (const p of navigator.getGamepads()) {
+      if (!p || !p.connected) continue;
+      out.name = p.id;
+      const ax = (k) => dz(p.axes[k] || 0);
+      const bt = (k) => (p.buttons[k] && (p.buttons[k].pressed || p.buttons[k].value > 0.3) ? 1 : 0);
+      out.s[0].x = ax(0); out.s[0].y = -ax(1);
+      out.s[1].x = ax(2); out.s[1].y = -ax(3);
+      out.hold[0] = bt(5) - bt(4);   /* RB − LB : cổ tay xoay */
+      out.hold[1] = bt(7) - bt(6);   /* RT − LT : kẹp */
+      out.home = !!bt(0);
+      break;
+    }
+    return out;
+  }
+
+  function showPad(name) {
+    if (name === padName) return;
+    padName = name;
+    const pill = $("pillPad");
+    pill.hidden = !name;
+    if (name) {
+      pill.className = "pill ok";
+      pill.lastElementChild.textContent = "Tay cầm: " + name.replace(/\s*\(.*$/, "").slice(0, 28);
+    }
+  }
+
+  /* ---------- Vòng lặp joystick ---------- */
+  let lastT = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.1, (now - lastT) / 1000);
+    lastT = now;
+    const gp = readGamepad();
+    showPad(gp.name);
+
+    if (mode === "joystick" && !document.hidden) {
+      const rate = speed * JOY_RATE;   /* độ/giây khi gạt hết cỡ */
+      sticks.forEach((st, s) => {
+        [["x", st.selx, st.invx], ["y", st.sely, st.invy]].forEach(([axis, sel, inv]) => {
+          const j = +sel.value;
+          if (j < 0) return;
+          const v = clamp(st[axis] + gp.s[s][axis], -1, 1);
+          if (v !== 0) setAngle(j, angles[j] + (inv.checked ? -1 : 1) * v * rate * dt);
+        });
+      });
+      held.forEach((b) => setAngle(+b.dataset.j, angles[+b.dataset.j] + +b.dataset.d * rate * dt));
+      HOLD_JOINTS.forEach((j, k) => { if (gp.hold[k]) setAngle(j, angles[j] + gp.hold[k] * rate * dt); });
+      if (gp.home && !homeWasDown) goHome();
+      homeWasDown = gp.home;
+    }
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  /* ---------- Tab, tốc độ, Home ---------- */
+  function setMode(m) {
+    mode = m;
+    $("panelSliders").hidden = m !== "sliders";
+    $("panelJoy").hidden = m !== "joystick";
+    $("tabSliders").setAttribute("aria-selected", m === "sliders");
+    $("tabJoy").setAttribute("aria-selected", m === "joystick");
+  }
+  $("tabSliders").addEventListener("click", () => setMode("sliders"));
+  $("tabJoy").addEventListener("click", () => setMode("joystick"));
+
+  $("speed").addEventListener("input", (e) => {
+    speed = +e.target.value;
+    $("speedOut").textContent = speed + "°/s";
+    speedDirty = true;
+  });
+
+  function goHome() { JOINTS.forEach((j, i) => setAngle(i, j.home)); }
+  $("home").addEventListener("click", goHome);
+
+  /* Rời tab / ẩn trang: nhả hết nút giữ */
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) { held.forEach((b) => b.classList.remove("on")); held.clear(); }
+  });
+
+  /* ---------- WebSocket tới server ---------- */
+  let ws = null, wsOpen = false;
+
+  function setPill(id, cls, text) {
+    const p = $(id);
+    p.className = "pill " + cls;
+    p.lastElementChild.textContent = text;
+  }
+  function showStatus(m) {
+    if (m.sim) setPill("pillSerial", "warn", "STM32: mô phỏng (chưa có phần cứng)");
+    else if (m.serial) setPill("pillSerial", "ok", "STM32: " + m.port);
+    else setPill("pillSerial", "", "STM32: chưa mở được " + m.port);
+  }
+
+  function connect() {
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    ws = new WebSocket(`${proto}//${location.host}/ws${location.search}`);
+    ws.onopen = () => { wsOpen = true; setPill("pillWs", "ok", "Máy chủ: đã kết nối"); };
+    ws.onclose = () => {
+      wsOpen = false;
+      setPill("pillWs", "", "Máy chủ: mất kết nối, đang thử lại…");
+      setPill("pillSerial", "", "STM32: —");
+      setTimeout(connect, 1500);
+    };
+    ws.onmessage = (ev) => {
+      let m;
+      try { m = JSON.parse(ev.data); } catch { return; }
+      if (m.type === "state") {
+        applyRemoteAngles(m.a); applySpeed(m.speed); showStatus(m);
+        dirty = false; speedDirty = false;
+      } else if (m.type === "status") {
+        showStatus(m);
+      } else if (m.type === "angles") {
+        if (performance.now() - lastLocalEdit > 400) applyRemoteAngles(m.a);   /* thiết bị khác đang điều khiển */
+      } else if (m.type === "speed") {
+        applySpeed(m.v);
+      }
+    };
+  }
+  connect();
+
+  /* Gửi tối đa ~30 lần/giây, chỉ khi có thay đổi */
+  setInterval(() => {
+    if (!wsOpen) return;
+    if (speedDirty) { ws.send(JSON.stringify({ type: "speed", v: speed })); speedDirty = false; }
+    if (dirty) { ws.send(JSON.stringify({ type: "angles", a: angles.map(round1) })); dirty = false; }
+  }, SEND_MS);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,1148 @@
+From e135d69d47d87433d6c3d48f0654f85d7aa88d1b Mon Sep 17 00:00:00 2001
+From: NQB26 <NQB26@users.noreply.github.com>
+Date: Tue, 27 Oct 2026 04:53:09 +0000
+Subject: [PATCH] Them dieu khien bang joystick/thanh truot tren giao dien web
+ (PC + dien thoai)
+
+- RobotArm_6DOF: nhan lenh UART (USART1 BLE + USART2 laptop) bang DMA vong,
+  lenh '6 goc', 'Sn:goc', 'Vtoc_do'; lam muot chuyen dong bang TIM2 100Hz;
+  gioi han goc tung khop; tu khoi dong lai DMA khi loi UART
+- control_ui: server aiohttp (WebSocket -> serial) + trang web responsive
+  voi thanh truot, joystick ao, ho tro tay cam (Gamepad API), che do --sim
+- README
+---
+ README.md                     |   9 +-
+ RobotArm_6DOF/Core/Src/main.c | 227 ++++++++++++++++-
+ control_ui/README.md          |  72 ++++++
+ control_ui/requirements.txt   |   2 +
+ control_ui/server.py          | 282 +++++++++++++++++++++
+ control_ui/static/index.html  | 445 ++++++++++++++++++++++++++++++++++
+ 6 files changed, 1032 insertions(+), 5 deletions(-)
+ create mode 100644 control_ui/README.md
+ create mode 100644 control_ui/requirements.txt
+ create mode 100644 control_ui/server.py
+ create mode 100644 control_ui/static/index.html
+
+diff --git a/README.md b/README.md
+index ebf8d21..b89fee6 100644
+--- a/README.md
++++ b/README.md
+@@ -1 +1,8 @@
+-# VDK-Canh-tay-robot
+\ No newline at end of file
++# VDK-Canh-tay-robot
++
++Cánh tay robot 6 bậc tự do dùng STM32.
++
++- `3D PARTS/`: các chi tiết in 3D (STL)
++- `RobotArm/`: project STM32F103 + script ROS2 tính động học ngược (`scr/`)
++- `RobotArm_6DOF/`: project STM32F411 điều khiển 6 servo, nhận lệnh qua UART (laptop / BLE)
++- `control_ui/`: **giao diện web điều khiển bằng thanh trượt hoặc joystick** trên máy tính / điện thoại, xem [control_ui/README.md](control_ui/README.md)
+diff --git a/RobotArm_6DOF/Core/Src/main.c b/RobotArm_6DOF/Core/Src/main.c
+index f8759c1..be3d3a5 100644
+--- a/RobotArm_6DOF/Core/Src/main.c
++++ b/RobotArm_6DOF/Core/Src/main.c
+@@ -21,17 +21,42 @@
+ 
+ /* Private includes ----------------------------------------------------------*/
+ /* USER CODE BEGIN Includes */
+-
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
+ /* USER CODE END Includes */
+ 
+ /* Private typedef -----------------------------------------------------------*/
+ /* USER CODE BEGIN PTD */
+-
++/* Kenh nhan lenh UART: DMA vong (circular) + bo dem dong lenh */
++typedef struct
++{
++  UART_HandleTypeDef *huart;
++  uint8_t dma_buf[128];       /* bo dem DMA vong */
++  uint16_t rd;                /* chi so doc cua CPU */
++  char line[96];              /* dong lenh dang ghep */
++  uint8_t line_len;
++  uint8_t overflow;           /* dong qua dai -> bo qua */
++  volatile uint8_t restart;   /* bao loi UART -> khoi dong lai DMA */
++} UartRx_t;
+ /* USER CODE END PTD */
+ 
+ /* Private define ------------------------------------------------------------*/
+ /* USER CODE BEGIN PD */
+-
++#define NUM_SERVO         6
++#define RX_DMA_SIZE       128
++#define LINE_MAX_LEN      96
++
++/* Do rong xung servo (us) ung voi 0 va 180 do.
++ * Giu 1000..2000 giong project RobotArm (F103). Neu servo quay du 180 do
++ * voi 500..2500 thi doi lai o day. */
++#define SERVO_MIN_US      1000
++#define SERVO_MAX_US      2000
++
++#define SERVO_TICK_S      0.01f   /* TIM2 = 100 Hz (10 ms) */
++#define SPEED_MIN_DPS     5.0f
++#define SPEED_MAX_DPS     720.0f
++#define SPEED_DEFAULT_DPS 90.0f
+ /* USER CODE END PD */
+ 
+ /* Private macro -------------------------------------------------------------*/
+@@ -50,7 +75,18 @@ DMA_HandleTypeDef hdma_usart1_rx;
+ DMA_HandleTypeDef hdma_usart2_rx;
+ 
+ /* USER CODE BEGIN PV */
++static UartRx_t rx_ble;   /* USART1: module BLE (dien thoai) */
++static UartRx_t rx_pc;    /* USART2: laptop / cau noi USB-UART */
+ 
++static float servo_target[NUM_SERVO]  = {90, 90, 90, 90, 90, 90};
++static float servo_current[NUM_SERVO] = {90, 90, 90, 90, 90, 90};
++
++/* Gioi han goc an toan tung khop (do). Chinh theo co khi cua canh tay
++ * de tranh dam vao chan de / tu va cham. */
++static const float servo_min[NUM_SERVO] = {0, 0, 0, 0, 0, 0};
++static const float servo_max[NUM_SERVO] = {180, 180, 180, 180, 180, 180};
++
++static volatile float max_speed_dps = SPEED_DEFAULT_DPS;
+ /* USER CODE END PV */
+ 
+ /* Private function prototypes -----------------------------------------------*/
+@@ -63,12 +99,178 @@ static void MX_TIM4_Init(void);
+ static void MX_USART1_UART_Init(void);
+ static void MX_USART2_UART_Init(void);
+ /* USER CODE BEGIN PFP */
+-
++static void Servo_Write(uint8_t idx, float deg);
++static void UartRx_Start(UartRx_t *ch);
++static void UartRx_Poll(UartRx_t *ch);
+ /* USER CODE END PFP */
+ 
+ /* Private user code ---------------------------------------------------------*/
+ /* USER CODE BEGIN 0 */
+ 
++static float Clampf(float v, float lo, float hi)
++{
++  if (v < lo) return lo;
++  if (v > hi) return hi;
++  return v;
++}
++
++static void Servo_Write(uint8_t idx, float deg)
++{
++  uint32_t pulse;
++
++  deg = Clampf(deg, 0.0f, 180.0f);
++  pulse = SERVO_MIN_US + (uint32_t)((deg / 180.0f) * (float)(SERVO_MAX_US - SERVO_MIN_US));
++
++  switch (idx)
++  {
++    case 0: __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, pulse); break; /* SERVO_1 PA6 */
++    case 1: __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, pulse); break; /* SERVO_2 PA7 */
++    case 2: __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, pulse); break; /* SERVO_3 PB0 */
++    case 3: __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_4, pulse); break; /* SERVO_4 PB1 */
++    case 4: __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, pulse); break; /* SERVO_5 PB6 */
++    case 5: __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2, pulse); break; /* SERVO_6 PB7 */
++    default: break;
++  }
++}
++
++static void Servo_SetTarget(uint8_t idx, float deg)
++{
++  if (idx >= NUM_SERVO) return;
++  servo_target[idx] = Clampf(deg, servo_min[idx], servo_max[idx]);
++}
++
++/* Doc 6 so thuc cach nhau boi dau ',' -> out[]. Tra ve 1 neu hop le. */
++static uint8_t Parse6(const char *s, float out[NUM_SERVO])
++{
++  char *end;
++  double v;
++  uint8_t i;
++
++  for (i = 0; i < NUM_SERVO; i++)
++  {
++    v = strtod(s, &end);
++    if (end == s || v != v) return 0;   /* khong co so, hoac NaN */
++    out[i] = (float)v;
++    s = end;
++    if (i < NUM_SERVO - 1)
++    {
++      if (*s != ',') return 0;
++      s++;
++    }
++  }
++  return 1;
++}
++
++/* Cac lenh (ket thuc bang '\n', giao thuc cu cua RobotArm van dung duoc):
++ *   a1,a2,a3,a4,a5,a6   dat goc muc tieu 6 servo (do), vd "90,45.5,120,90,90,30"
++ *   Sn:goc              dat 1 servo, n = 1..6,        vd "S3:135"
++ *   Vtoc_do             toc do toi da (do/giay),      vd "V90"
++ */
++static void Cmd_Process(const char *line)
++{
++  float a[NUM_SERVO];
++  uint8_t i;
++
++  if (line[0] == 'S' || line[0] == 's')
++  {
++    char *end;
++    long n = strtol(line + 1, &end, 10);
++    if (end != line + 1 && *end == ':' && n >= 1 && n <= NUM_SERVO)
++    {
++      double v = strtod(end + 1, &end);
++      if (v == v) Servo_SetTarget((uint8_t)(n - 1), (float)v);
++    }
++  }
++  else if (line[0] == 'V' || line[0] == 'v')
++  {
++    char *end;
++    double v = strtod(line + 1, &end);
++    if (end != line + 1 && v == v)
++    {
++      max_speed_dps = Clampf((float)v, SPEED_MIN_DPS, SPEED_MAX_DPS);
++    }
++  }
++  else if (Parse6(line, a))
++  {
++    for (i = 0; i < NUM_SERVO; i++) Servo_SetTarget(i, a[i]);
++  }
++}
++
++static void UartRx_Start(UartRx_t *ch)
++{
++  ch->rd = 0;
++  ch->line_len = 0;
++  ch->overflow = 0;
++  ch->restart = 0;
++  HAL_UART_Receive_DMA(ch->huart, ch->dma_buf, RX_DMA_SIZE);
++}
++
++/* Goi lien tuc trong vong lap chinh: lay byte moi tu bo dem DMA vong,
++ * ghep thanh dong, gap '\n' thi xu ly lenh. */
++static void UartRx_Poll(UartRx_t *ch)
++{
++  uint16_t head;
++  uint8_t c;
++
++  if (ch->restart)
++  {
++    UartRx_Start(ch);
++    return;
++  }
++
++  head = (uint16_t)(RX_DMA_SIZE - __HAL_DMA_GET_COUNTER(ch->huart->hdmarx));
++  while (ch->rd != head)
++  {
++    c = ch->dma_buf[ch->rd];
++    ch->rd = (uint16_t)((ch->rd + 1) % RX_DMA_SIZE);
++
++    if (c == '\n' || c == '\r')
++    {
++      if (ch->line_len > 0 && !ch->overflow)
++      {
++        ch->line[ch->line_len] = '\0';
++        Cmd_Process(ch->line);
++      }
++      ch->line_len = 0;
++      ch->overflow = 0;
++    }
++    else if (ch->line_len < LINE_MAX_LEN - 1)
++    {
++      ch->line[ch->line_len++] = (char)c;
++    }
++    else
++    {
++      ch->overflow = 1;
++    }
++  }
++}
++
++/* Loi UART (overrun/noise/framing): HAL dung DMA -> danh dau de khoi dong lai */
++void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
++{
++  if (huart->Instance == USART1) rx_ble.restart = 1;
++  else if (huart->Instance == USART2) rx_pc.restart = 1;
++}
++
++/* TIM2 100 Hz: dua goc hien tai tien dan toi goc muc tieu voi toc do toi da
++ * max_speed_dps -> servo chuyen dong mem, khong giat khi keo thanh truot. */
++void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
++{
++  uint8_t i;
++  float step, diff;
++
++  if (htim->Instance != TIM2) return;
++
++  step = max_speed_dps * SERVO_TICK_S;
++  for (i = 0; i < NUM_SERVO; i++)
++  {
++    diff = servo_target[i] - servo_current[i];
++    if (diff > step)       servo_current[i] += step;
++    else if (diff < -step) servo_current[i] -= step;
++    else                   servo_current[i] = servo_target[i];
++    Servo_Write(i, servo_current[i]);
++  }
++}
+ /* USER CODE END 0 */
+ 
+ /**
+@@ -114,6 +316,21 @@ int main(void)
+ 
+ 	HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_1);
+ 	HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_2);
++
++  /* Dua servo ve vi tri ban dau (90 do) */
++  {
++    uint8_t i;
++    for (i = 0; i < NUM_SERVO; i++) Servo_Write(i, servo_current[i]);
++  }
++
++  /* Nhan lenh tu BLE (USART1) va laptop (USART2) bang DMA vong */
++  rx_ble.huart = &huart1;
++  rx_pc.huart  = &huart2;
++  UartRx_Start(&rx_ble);
++  UartRx_Start(&rx_pc);
++
++  /* TIM2 100 Hz: cap nhat chuyen dong mem */
++  HAL_TIM_Base_Start_IT(&htim2);
+   /* USER CODE END 2 */
+ 
+   /* Infinite loop */
+@@ -123,6 +340,8 @@ int main(void)
+     /* USER CODE END WHILE */
+ 
+     /* USER CODE BEGIN 3 */
++    UartRx_Poll(&rx_ble);
++    UartRx_Poll(&rx_pc);
+   }
+   /* USER CODE END 3 */
+ }
+diff --git a/control_ui/README.md b/control_ui/README.md
+new file mode 100644
+index 0000000..ab9ce82
+--- /dev/null
++++ b/control_ui/README.md
+@@ -0,0 +1,72 @@
++# Giao diện điều khiển cánh tay robot 6DOF
++
++Điều khiển cánh tay bằng **thanh trượt** hoặc **joystick** (cần ảo trên màn hình cảm ứng, hoặc tay cầm Xbox/PS thật) từ trình duyệt trên **máy tính hoặc điện thoại**.
++
++```
++Trình duyệt (PC / điện thoại) --WebSocket--> server.py --UART 115200--> STM32F411 (RobotArm_6DOF) --PWM--> 6 servo
++```
++
++## 1. Nạp firmware
++
++Mở `RobotArm_6DOF/MDK-ARM/RobotArm_6DOF.uvprojx` bằng Keil, build và nạp như bình thường.
++Firmware nhận lệnh trên **cả hai UART**:
++
++| UART | Chân | Dùng cho |
++|------|------|----------|
++| USART2 (`LAPTOP`) | PA2 (TX), PA3 (RX) | Laptop qua mạch USB-UART (CP2102/CH340…) |
++| USART1 (`BLE`)    | PA9 (TX), PA10 (RX) | Module BLE/Bluetooth nối với điện thoại |
++
++Nối chéo TX↔RX và **chung GND**. Nguồn servo cấp riêng (không lấy từ chân 3V3/5V của board), chung GND với STM32.
++
++## 2. Chạy giao diện web
++
++```bash
++cd control_ui
++pip install -r requirements.txt
++
++python server.py --list                 # xem tên cổng serial
++python server.py --serial COM5          # Windows
++python server.py --serial /dev/ttyUSB0  # Linux / Raspberry Pi
++python server.py --sim                  # thử giao diện khi chưa có phần cứng
++```
++
++Server in ra hai địa chỉ:
++
++- **Máy tính:** `http://localhost:8080`
++- **Điện thoại** (cùng Wi-Fi với máy chạy server): `http://<IP-máy-tính>:8080`
++  (Windows hỏi tường lửa thì chọn *Allow* cho mạng riêng tư.)
++
++Tùy chọn: `--baud`, `--http-port`, `--host 127.0.0.1` (chỉ cho máy này), `--token matkhau` (khi đó mở trang bằng `/?token=matkhau`).
++
++> Server không có xác thực mặc định và có thể điều khiển phần cứng thật. Chỉ chạy trên mạng tin cậy, hoặc dùng `--token`.
++
++## 3. Cách dùng
++
++**Tab "Thanh trượt":** mỗi khớp một thanh 0–180°.
++
++**Tab "Joystick":** gạt cần để quay khớp theo vận tốc, thả tay thì khớp đứng yên.
++- Mỗi cần có 2 ô chọn để gán khớp cho trục X/Y và tick "đảo" nếu chiều quay ngược. Mặc định: cần trái = Đế + Vai, cần phải = Cổ tay gập + Khuỷu.
++- Nút `−` / `+` giữ để quay Cổ tay xoay và Kẹp.
++- Tay cầm vật lý (Gamepad API): cần trái/phải = 2 joystick, LB/RB = cổ tay xoay, LT/RT = kẹp, A = về vị trí gốc.
++  Trình duyệt chỉ cho dùng tay cầm trên trang `localhost` hoặc HTTPS, nên cắm tay cầm vào **máy tính** và mở `http://localhost:8080` (trên điện thoại qua IP LAN thì dùng cần ảo).
++
++**Chung:** thanh *Tốc độ servo* (°/s) giới hạn tốc độ tối đa, firmware làm mượt chuyển động nên kéo thanh trượt nhanh cũng không bị giật. Nút *Về vị trí gốc* đưa tất cả khớp về 90°.
++
++Nhiều thiết bị có thể mở trang cùng lúc, vị trí các khớp được đồng bộ giữa chúng.
++
++## 4. Giao thức UART (dòng ASCII, kết thúc `\n`)
++
++| Lệnh | Ví dụ | Ý nghĩa |
++|------|-------|---------|
++| `a1,a2,a3,a4,a5,a6` | `90,45.5,120,90,90,30` | Góc đích 6 servo (độ). Giống giao thức của project `RobotArm` (F103). |
++| `Sn:góc` | `S3:135` | Đặt riêng servo n (1–6) |
++| `Vtốc_độ` | `V90` | Tốc độ tối đa, 5–720 °/s |
++
++Nhờ vậy cũng có thể điều khiển từ điện thoại bằng một app "BLE/Bluetooth Serial Terminal" bất kỳ, gõ lệnh trực tiếp.
++
++## 5. Tùy chỉnh cho cánh tay của bạn
++
++- **Giới hạn góc từng khớp** (tránh va chạm cơ khí): `servo_min[]`/`servo_max[]` trong `RobotArm_6DOF/Core/Src/main.c` và `JOINTS` (min/max) ở đầu script trong `static/index.html`.
++- **Xung servo:** `SERVO_MIN_US`/`SERVO_MAX_US` trong `main.c` (mặc định 1000–2000 µs như project F103; nhiều servo MG996R/MG90S dùng 500–2500 µs).
++- **Servo quay ngược:** tick "đảo" ở tab Joystick, hoặc đổi chiều trong firmware.
++- **Mất kết nối:** các lệnh là góc đích tuyệt đối, nên nếu trình duyệt/server tắt đột ngột, cánh tay dừng lại ở vị trí đích cuối cùng chứ không chạy tiếp.
+diff --git a/control_ui/requirements.txt b/control_ui/requirements.txt
+new file mode 100644
+index 0000000..a5ff78e
+--- /dev/null
++++ b/control_ui/requirements.txt
+@@ -0,0 +1,2 @@
++aiohttp>=3.9
++pyserial>=3.5
+diff --git a/control_ui/server.py b/control_ui/server.py
+new file mode 100644
+index 0000000..2bacf2e
+--- /dev/null
++++ b/control_ui/server.py
+@@ -0,0 +1,282 @@
++#!/usr/bin/env python3
++"""Cau noi Web UI <-> STM32 (RobotArm_6DOF).
++
++Chay tren laptop / Raspberry Pi noi voi STM32 qua USB-UART (USART2) hoac
++module BLE/Bluetooth serial. Phuc vu trang web dieu khien (thanh truot +
++joystick) cho trinh duyet tren may tinh hoac dien thoai trong cung mang Wi-Fi.
++
++    python server.py --serial COM5            (Windows)
++    python server.py --serial /dev/ttyUSB0    (Linux)
++    python server.py --sim                    (khong can phan cung, de thu giao dien)
++"""
++import argparse
++import asyncio
++import hmac
++import json
++import logging
++import math
++import socket
++import sys
++from pathlib import Path
++
++from aiohttp import WSMsgType, web
++
++try:
++    import serial
++    import serial.tools.list_ports
++except ImportError:  # chi bat buoc khi khong dung --sim
++    serial = None
++
++NUM_SERVO = 6
++HOME = 90.0
++SEND_HZ = 50                 # gioi han toc do gui xuong STM32
++SPEED_MIN, SPEED_MAX = 10, 360
++STATIC_DIR = Path(__file__).parent / "static"
++
++log = logging.getLogger("robotarm")
++
++
++class Arm:
++    """Giu trang thai muc tieu cua canh tay va ghi lenh xuong cong serial."""
++
++    def __init__(self, port, baud, sim):
++        self.port = port
++        self.baud = baud
++        self.sim = sim
++        self.angles = [HOME] * NUM_SERVO
++        self.speed = 90
++        self.dirty = False        # co goc moi chua gui
++        self.speed_dirty = False
++        self.ser = None
++
++    @property
++    def connected(self):
++        return self.sim or (self.ser is not None and self.ser.is_open)
++
++    def _open(self):
++        self.ser = serial.Serial(self.port, self.baud, timeout=0, write_timeout=0.2)
++        # Sau khi (noi lai) cong, dong bo lai toc do va vi tri hien tai
++        self.speed_dirty = True
++        self.dirty = True
++        log.info("Da mo %s @ %d", self.port, self.baud)
++
++    async def try_open(self):
++        if self.sim or self.connected:
++            return
++        try:
++            await asyncio.get_running_loop().run_in_executor(None, self._open)
++        except (serial.SerialException, OSError) as exc:
++            self.ser = None
++            log.warning("Chua mo duoc %s: %s (thu lai sau 2 giay)", self.port, exc)
++
++    def _write(self, text):
++        if self.sim:
++            log.debug("SIM >> %r", text)
++            return True
++        try:
++            self.ser.write(text.encode("ascii"))
++            return True
++        except (serial.SerialException, OSError) as exc:
++            log.warning("Mat ket noi serial: %s", exc)
++            try:
++                self.ser.close()
++            except Exception:
++                pass
++            self.ser = None
++            return False
++
++    def flush(self):
++        """Gui lenh dang cho (neu co). Goi dinh ky, nen luon <= SEND_HZ lenh/giay."""
++        if not self.connected:
++            return
++        if self.speed_dirty:
++            if not self._write(f"V{self.speed}\n"):
++                return
++            self.speed_dirty = False
++        if self.dirty:
++            line = ",".join(f"{a:.1f}" for a in self.angles) + "\n"
++            if self._write(line):
++                self.dirty = False
++
++
++def parse_angles(raw):
++    """Kiem tra du lieu tu client; tra ve list 6 goc da kep 0..180 hoac None."""
++    if not isinstance(raw, list) or len(raw) != NUM_SERVO:
++        return None
++    out = []
++    for v in raw:
++        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
++            return None
++        out.append(min(180.0, max(0.0, float(v))))
++    return out
++
++
++def state_msg(arm, clients):
++    return {
++        "type": "state",
++        "a": arm.angles,
++        "speed": arm.speed,
++        "serial": arm.connected,
++        "sim": arm.sim,
++        "port": arm.port if not arm.sim else "SIM",
++        "clients": len(clients),
++    }
++
++
++async def broadcast(app, msg, skip=None):
++    for ws in list(app["clients"]):
++        if ws is not skip and not ws.closed:
++            try:
++                await ws.send_json(msg)
++            except ConnectionResetError:
++                pass
++
++
++async def index(request):
++    return web.FileResponse(STATIC_DIR / "index.html")
++
++
++async def ws_handler(request):
++    app = request.app
++    token = app["token"]
++    if token and not hmac.compare_digest(request.query.get("token", ""), token):
++        raise web.HTTPUnauthorized(text="Sai token")
++
++    ws = web.WebSocketResponse(heartbeat=15, max_msg_size=4096)
++    await ws.prepare(request)
++    arm = app["arm"]
++    app["clients"].add(ws)
++    log.info("Client ket noi (%d dang mo)", len(app["clients"]))
++    await ws.send_json(state_msg(arm, app["clients"]))
++
++    try:
++        async for msg in ws:
++            if msg.type != WSMsgType.TEXT:
++                continue
++            try:
++                data = json.loads(msg.data)
++            except ValueError:
++                continue
++            if not isinstance(data, dict):
++                continue
++
++            kind = data.get("type")
++            if kind == "angles":
++                angles = parse_angles(data.get("a"))
++                if angles is not None:
++                    arm.angles = angles
++                    arm.dirty = True
++                    await broadcast(app, {"type": "angles", "a": angles}, skip=ws)
++            elif kind == "speed":
++                v = data.get("v")
++                if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v):
++                    arm.speed = int(min(SPEED_MAX, max(SPEED_MIN, v)))
++                    arm.speed_dirty = True
++                    await broadcast(app, {"type": "speed", "v": arm.speed}, skip=ws)
++    finally:
++        app["clients"].discard(ws)
++        log.info("Client ngat ket noi (%d con lai)", len(app["clients"]))
++    return ws
++
++
++async def sender_loop(app):
++    arm = app["arm"]
++    last_try = 0.0
++    loop = asyncio.get_running_loop()
++    while True:
++        await asyncio.sleep(1.0 / SEND_HZ)
++        if not arm.connected and loop.time() - last_try >= 2.0:
++            last_try = loop.time()
++            await arm.try_open()
++        arm.flush()
++
++
++async def status_loop(app):
++    while True:
++        await asyncio.sleep(1.0)
++        await broadcast(app, state_msg(app["arm"], app["clients"]) | {"type": "status"})
++
++
++async def start_tasks(app):
++    app["tasks"] = [
++        asyncio.create_task(sender_loop(app)),
++        asyncio.create_task(status_loop(app)),
++    ]
++
++
++async def stop_tasks(app):
++    for t in app["tasks"]:
++        t.cancel()
++    await asyncio.gather(*app["tasks"], return_exceptions=True)
++    arm = app["arm"]
++    if arm.ser is not None:
++        arm.ser.close()
++
++
++def lan_ip():
++    try:
++        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
++            s.connect(("10.255.255.255", 1))   # khong gui goi tin nao
++            return s.getsockname()[0]
++    except OSError:
++        return "127.0.0.1"
++
++
++def pick_serial_port(requested):
++    if requested:
++        return requested
++    ports = [p.device for p in serial.tools.list_ports.comports()]
++    if len(ports) == 1:
++        return ports[0]
++    sys.exit(
++        "Hay chon cong serial bang --serial. Cac cong hien co: "
++        + (", ".join(ports) if ports else "(khong thay cong nao)")
++    )
++
++
++def main():
++    ap = argparse.ArgumentParser(description="Web UI dieu khien canh tay robot 6DOF")
++    ap.add_argument("--serial", help="cong serial noi STM32, vd COM5 hoac /dev/ttyUSB0")
++    ap.add_argument("--baud", type=int, default=115200)
++    ap.add_argument("--host", default="0.0.0.0", help="dia chi lang nghe (mac dinh: ca mang LAN)")
++    ap.add_argument("--http-port", type=int, default=8080)
++    ap.add_argument("--token", help="neu dat: client phai mo trang voi ?token=<gia tri>")
++    ap.add_argument("--sim", action="store_true", help="che do mo phong, khong can STM32")
++    ap.add_argument("--list", action="store_true", help="liet ke cong serial roi thoat")
++    ap.add_argument("-v", "--verbose", action="store_true")
++    args = ap.parse_args()
++
++    logging.basicConfig(
++        level=logging.DEBUG if args.verbose else logging.INFO,
++        format="%(asctime)s %(levelname)s %(message)s",
++        datefmt="%H:%M:%S",
++    )
++
++    if args.list:
++        if serial is None:
++            sys.exit("Thieu pyserial: pip install -r requirements.txt")
++        for p in serial.tools.list_ports.comports():
++            print(f"{p.device}\t{p.description}")
++        return
++    if not args.sim and serial is None:
++        sys.exit("Thieu pyserial: pip install -r requirements.txt (hoac dung --sim)")
++
++    port = None if args.sim else pick_serial_port(args.serial)
++
++    app = web.Application()
++    app["arm"] = Arm(port, args.baud, args.sim)
++    app["clients"] = set()
++    app["token"] = args.token
++    app.router.add_get("/", index)
++    app.router.add_get("/ws", ws_handler)
++    app.on_startup.append(start_tasks)
++    app.on_cleanup.append(stop_tasks)
++
++    suffix = f"/?token={args.token}" if args.token else "/"
++    print(f"\n  May tinh : http://localhost:{args.http_port}{suffix}")
++    print(f"  Dien thoai (cung Wi-Fi): http://{lan_ip()}:{args.http_port}{suffix}\n")
++    web.run_app(app, host=args.host, port=args.http_port, print=None)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/control_ui/static/index.html b/control_ui/static/index.html
+new file mode 100644
+index 0000000..0e3e774
+--- /dev/null
++++ b/control_ui/static/index.html
+@@ -0,0 +1,445 @@
++<!DOCTYPE html>
++<html lang="vi">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
++<meta name="theme-color" content="#0f1318">
++<title>Điều khiển cánh tay robot 6DOF</title>
++<style>
++  :root {
++    --bg: #0f1318; --panel: #181e26; --panel2: #202833; --line: #2c3541;
++    --text: #e8edf3; --muted: #93a0b0; --accent: #3d9bff; --ok: #2fbf71; --bad: #ef5350; --warn: #f0b429;
++    color-scheme: dark;
++  }
++  * { box-sizing: border-box; }
++  html, body { margin: 0; background: var(--bg); color: var(--text); }
++  body {
++    font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
++    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
++    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
++    overscroll-behavior: none;
++  }
++  .app { max-width: 760px; margin: 0 auto; padding: 12px; }
++  h1 { font-size: 1.15rem; margin: 4px 0 10px; font-weight: 650; }
++
++  .status { display: flex; flex-wrap: wrap; gap: 6px 8px; margin-bottom: 12px; }
++  .pill {
++    display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px;
++    background: var(--panel); border: 1px solid var(--line); border-radius: 999px;
++    font-size: .8rem; color: var(--muted);
++  }
++  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); flex: none; }
++  .pill.ok .dot { background: var(--ok); }
++  .pill.warn .dot { background: var(--warn); }
++  .pill.ok, .pill.warn { color: var(--text); }
++
++  .tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 12px; }
++  .tabs button {
++    padding: 10px; border-radius: 10px; border: 1px solid var(--line);
++    background: var(--panel); color: var(--muted); font: inherit; font-weight: 600; cursor: pointer;
++  }
++  .tabs button[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
++
++  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px; margin-bottom: 12px; }
++  .card h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
++  [hidden] { display: none !important; }
++
++  /* Thanh trượt */
++  .joint { display: grid; grid-template-columns: 112px 1fr 48px; align-items: center; gap: 10px; padding: 7px 0; }
++  .joint + .joint { border-top: 1px solid var(--line); }
++  .joint label { font-size: .95rem; }
++  .joint output { text-align: right; font-variant-numeric: tabular-nums; color: var(--accent); font-weight: 600; }
++  input[type=range] { width: 100%; height: 34px; margin: 0; accent-color: var(--accent); cursor: pointer; }
++
++  /* Joystick */
++  .sticks { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
++  .stickbox { display: flex; flex-direction: column; align-items: center; gap: 10px; min-width: 0; }
++  .stickbox h3 { margin: 0; font-size: .85rem; color: var(--muted); font-weight: 600; }
++  .pad {
++    position: relative; width: min(100%, 230px); aspect-ratio: 1; border-radius: 50%;
++    background:
++      linear-gradient(var(--line), var(--line)) center / 1px 100% no-repeat,
++      linear-gradient(var(--line), var(--line)) center / 100% 1px no-repeat,
++      radial-gradient(circle, var(--panel2) 0 62%, #151b22 63% 100%);
++    border: 2px solid var(--line); touch-action: none; cursor: grab;
++  }
++  .knob {
++    position: absolute; left: 50%; top: 50%; width: 30%; height: 30%; margin: -15% 0 0 -15%;
++    border-radius: 50%; background: var(--accent); box-shadow: 0 2px 10px rgba(0,0,0,.5);
++    pointer-events: none;
++  }
++  .map { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 6px; width: 100%; font-size: .85rem; color: var(--muted); }
++  .map select {
++    min-width: 0; width: 100%; padding: 6px 4px; font: inherit; font-size: 16px; color: var(--text);
++    background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
++  }
++  .map label.inv { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
++
++  .holds { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 14px; }
++  .holdgrp { display: flex; flex-direction: column; gap: 6px; }
++  .holdgrp span { font-size: .85rem; color: var(--muted); text-align: center; }
++  .holdbtns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
++  .hold {
++    padding: 14px 0; font: inherit; font-size: 1.2rem; font-weight: 700; color: var(--text);
++    background: var(--panel2); border: 1px solid var(--line); border-radius: 12px; touch-action: none; cursor: pointer;
++  }
++  .hold.on { background: var(--accent); border-color: var(--accent); color: #fff; }
++
++  .readout { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; margin-top: 14px; }
++  .chip { background: var(--panel2); border-radius: 8px; padding: 5px 2px; text-align: center; font-size: .7rem; color: var(--muted); }
++  .chip b { display: block; color: var(--text); font-size: .95rem; font-variant-numeric: tabular-nums; }
++
++  .row { display: grid; grid-template-columns: 112px 1fr 64px; align-items: center; gap: 10px; }
++  .row output { text-align: right; font-variant-numeric: tabular-nums; color: var(--accent); font-weight: 600; }
++  .btn {
++    width: 100%; margin-top: 12px; padding: 12px; font: inherit; font-weight: 650; color: var(--text);
++    background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; cursor: pointer;
++  }
++  .btn:active { background: var(--accent); border-color: var(--accent); }
++  .hint { font-size: .8rem; color: var(--muted); margin: 6px 2px 0; }
++
++  @media (max-width: 420px) {
++    .joint, .row { grid-template-columns: 92px 1fr 44px; gap: 6px; }
++    .map { grid-template-columns: auto 1fr; }
++    .map label.inv { grid-column: 2; }
++  }
++</style>
++</head>
++<body>
++<div class="app">
++  <h1>Điều khiển cánh tay robot 6DOF</h1>
++
++  <div class="status" aria-live="polite">
++    <span class="pill" id="pillWs"><i class="dot"></i><span>Máy chủ: đang kết nối…</span></span>
++    <span class="pill" id="pillSerial"><i class="dot"></i><span>STM32: —</span></span>
++    <span class="pill" id="pillPad" hidden><i class="dot"></i><span></span></span>
++  </div>
++
++  <div class="tabs" role="tablist">
++    <button role="tab" id="tabSliders" aria-selected="true">Thanh trượt</button>
++    <button role="tab" id="tabJoy" aria-selected="false">Joystick</button>
++  </div>
++
++  <section class="card" id="panelSliders">
++    <h2>Góc từng khớp (0–180°)</h2>
++    <div id="sliders"></div>
++  </section>
++
++  <section class="card" id="panelJoy" hidden>
++    <h2>Joystick — kéo cần để quay khớp, thả tay thì dừng</h2>
++    <div class="sticks" id="sticks"></div>
++    <div class="holds" id="holds"></div>
++    <div class="readout" id="readout"></div>
++    <p class="hint" id="padHint">Tay cầm Xbox/PS: cần trái/phải = 2 joystick, LB/RB = cổ tay xoay −/+, LT/RT = kẹp −/+, A = về vị trí gốc.</p>
++  </section>
++
++  <section class="card">
++    <h2>Chung</h2>
++    <div class="row">
++      <label for="speed">Tốc độ servo</label>
++      <input type="range" id="speed" min="10" max="360" step="5" value="90">
++      <output id="speedOut" for="speed">90°/s</output>
++    </div>
++    <button class="btn" id="home" type="button">Về vị trí gốc (90°)</button>
++  </section>
++</div>
++
++<script>
++(() => {
++  "use strict";
++
++  /* Cấu hình khớp: sửa min/max cho khớp với giới hạn cơ khí của cánh tay
++     (nên đặt cùng giá trị với servo_min/servo_max trong firmware). */
++  const JOINTS = [
++    { name: "Đế (xoay)",     short: "Đế",   min: 0, max: 180, home: 90 },
++    { name: "Vai",           short: "Vai",  min: 0, max: 180, home: 90 },
++    { name: "Khuỷu",         short: "Khuỷu", min: 0, max: 180, home: 90 },
++    { name: "Cổ tay (gập)",  short: "Gập",  min: 0, max: 180, home: 90 },
++    { name: "Cổ tay (xoay)", short: "Xoay", min: 0, max: 180, home: 90 },
++    { name: "Kẹp",           short: "Kẹp",  min: 0, max: 180, home: 90 },
++  ];
++  const N = JOINTS.length;
++  /* Mặc định: cần trái = Đế (X) + Vai (Y); cần phải = Cổ tay gập (X) + Khuỷu (Y) */
++  const STICK_DEFAULTS = [
++    { x: 0, y: 1, name: "Cần trái" },
++    { x: 3, y: 2, name: "Cần phải" },
++  ];
++  /* Nút giữ: khớp 4 (cổ tay xoay) và 5 (kẹp) */
++  const HOLD_JOINTS = [4, 5];
++  const JOY_RATE = 0.8;      /* tốc độ joystick = 80% tốc độ servo để servo luôn theo kịp */
++  const SEND_MS = 33;        /* ~30 lệnh/giây */
++
++  const $ = (id) => document.getElementById(id);
++  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
++  const round1 = (v) => Math.round(v * 10) / 10;
++
++  /* ---------- Trạng thái ---------- */
++  const angles = JOINTS.map((j) => j.home);
++  let speed = 90;
++  let dirty = false, speedDirty = false;
++  let lastLocalEdit = 0;
++  let mode = "sliders";
++
++  /* ---------- Dựng giao diện ---------- */
++  const sliderEls = [], outEls = [], chipEls = [];
++
++  JOINTS.forEach((j, i) => {
++    const row = document.createElement("div");
++    row.className = "joint";
++    const id = "sl" + i;
++    row.innerHTML = `<label for="${id}">${j.name}</label>
++      <input type="range" id="${id}" min="${j.min}" max="${j.max}" step="1" value="${j.home}">
++      <output for="${id}">${j.home}°</output>`;
++    $("sliders").appendChild(row);
++    const input = row.querySelector("input");
++    sliderEls[i] = input;
++    outEls[i] = row.querySelector("output");
++    input.addEventListener("input", () => setAngle(i, +input.value));
++
++    const chip = document.createElement("div");
++    chip.className = "chip";
++    chip.innerHTML = `${j.short}<b>${j.home}°</b>`;
++    $("readout").appendChild(chip);
++    chipEls[i] = chip.querySelector("b");
++  });
++
++  function renderJoint(i) {
++    const v = Math.round(angles[i]);
++    sliderEls[i].value = v;
++    outEls[i].textContent = v + "°";
++    chipEls[i].textContent = v + "°";
++  }
++
++  function setAngle(i, v, local = true) {
++    v = clamp(v, JOINTS[i].min, JOINTS[i].max);
++    if (v === angles[i]) return;
++    angles[i] = v;
++    renderJoint(i);
++    if (local) { dirty = true; lastLocalEdit = performance.now(); }
++  }
++
++  function applyRemoteAngles(a) {
++    if (!Array.isArray(a) || a.length !== N) return;
++    a.forEach((v, i) => { if (typeof v === "number") setAngle(i, v, false); });
++  }
++
++  function applySpeed(v) {
++    if (typeof v !== "number") return;
++    speed = v;
++    $("speed").value = v;
++    $("speedOut").textContent = v + "°/s";
++  }
++
++  /* ---------- Joystick ảo ---------- */
++  const optionsHtml = '<option value="-1">— không dùng</option>' +
++    JOINTS.map((j, i) => `<option value="${i}">${j.name}</option>`).join("");
++
++  const sticks = STICK_DEFAULTS.map((def, s) => {
++    const box = document.createElement("div");
++    box.className = "stickbox";
++    box.innerHTML = `<h3>${def.name}</h3>
++      <div class="pad"><div class="knob"></div></div>
++      <div class="map"><span>X ↔</span><select class="selx" aria-label="${def.name}: khớp trục X">${optionsHtml}</select>
++        <label class="inv"><input type="checkbox" class="invx">đảo</label></div>
++      <div class="map"><span>Y ↕</span><select class="sely" aria-label="${def.name}: khớp trục Y">${optionsHtml}</select>
++        <label class="inv"><input type="checkbox" class="invy">đảo</label></div>`;
++    $("sticks").appendChild(box);
++
++    const pad = box.querySelector(".pad"), knob = box.querySelector(".knob");
++    const selx = box.querySelector(".selx"), sely = box.querySelector(".sely");
++    selx.value = def.x; sely.value = def.y;
++    const st = { x: 0, y: 0, id: null, selx, sely,
++                 invx: box.querySelector(".invx"), invy: box.querySelector(".invy") };
++
++    function move(e) {
++      const r = pad.getBoundingClientRect();
++      const R = r.width / 2;
++      const travel = R - knob.offsetWidth / 2;
++      let dx = e.clientX - (r.left + R), dy = e.clientY - (r.top + R);
++      const d = Math.hypot(dx, dy);
++      if (d > travel) { dx *= travel / d; dy *= travel / d; }
++      knob.style.transform = `translate(${dx}px, ${dy}px)`;
++      st.x = dx / travel;
++      st.y = -dy / travel;
++    }
++    function end(e) {
++      if (e.pointerId !== st.id) return;
++      st.id = null; st.x = 0; st.y = 0;
++      knob.style.transform = "";
++    }
++    pad.addEventListener("pointerdown", (e) => {
++      if (st.id !== null) return;
++      st.id = e.pointerId;
++      pad.setPointerCapture(e.pointerId);
++      move(e);
++      e.preventDefault();
++    });
++    pad.addEventListener("pointermove", (e) => { if (e.pointerId === st.id) move(e); });
++    pad.addEventListener("pointerup", end);
++    pad.addEventListener("pointercancel", end);
++    pad.addEventListener("lostpointercapture", end);
++    pad.addEventListener("contextmenu", (e) => e.preventDefault());
++    return st;
++  });
++
++  /* Nút giữ (cổ tay xoay, kẹp) */
++  const held = new Set();
++  HOLD_JOINTS.forEach((j) => {
++    const g = document.createElement("div");
++    g.className = "holdgrp";
++    g.innerHTML = `<span>${JOINTS[j].name}</span>
++      <div class="holdbtns">
++        <button type="button" class="hold" data-j="${j}" data-d="-1" aria-label="${JOINTS[j].name} giảm">−</button>
++        <button type="button" class="hold" data-j="${j}" data-d="1" aria-label="${JOINTS[j].name} tăng">+</button>
++      </div>`;
++    $("holds").appendChild(g);
++  });
++  document.querySelectorAll(".hold").forEach((b) => {
++    const release = () => { held.delete(b); b.classList.remove("on"); };
++    b.addEventListener("pointerdown", (e) => {
++      b.setPointerCapture(e.pointerId);
++      held.add(b); b.classList.add("on");
++      e.preventDefault();
++    });
++    b.addEventListener("pointerup", release);
++    b.addEventListener("pointercancel", release);
++    b.addEventListener("lostpointercapture", release);
++    b.addEventListener("contextmenu", (e) => e.preventDefault());
++  });
++
++  /* ---------- Tay cầm vật lý (Gamepad API) ---------- */
++  const dz = (v) => (Math.abs(v) < 0.15 ? 0 : (v - Math.sign(v) * 0.15) / 0.85);
++  let padName = null, homeWasDown = false;
++
++  function readGamepad() {
++    const out = { s: [{ x: 0, y: 0 }, { x: 0, y: 0 }], hold: [0, 0], home: false, name: null };
++    if (typeof navigator.getGamepads !== "function") return out;
++    for (const p of navigator.getGamepads()) {
++      if (!p || !p.connected) continue;
++      out.name = p.id;
++      const ax = (k) => dz(p.axes[k] || 0);
++      const bt = (k) => (p.buttons[k] && (p.buttons[k].pressed || p.buttons[k].value > 0.3) ? 1 : 0);
++      out.s[0].x = ax(0); out.s[0].y = -ax(1);
++      out.s[1].x = ax(2); out.s[1].y = -ax(3);
++      out.hold[0] = bt(5) - bt(4);   /* RB − LB : cổ tay xoay */
++      out.hold[1] = bt(7) - bt(6);   /* RT − LT : kẹp */
++      out.home = !!bt(0);
++      break;
++    }
++    return out;
++  }
++
++  function showPad(name) {
++    if (name === padName) return;
++    padName = name;
++    const pill = $("pillPad");
++    pill.hidden = !name;
++    if (name) {
++      pill.className = "pill ok";
++      pill.lastElementChild.textContent = "Tay cầm: " + name.replace(/\s*\(.*$/, "").slice(0, 28);
++    }
++  }
++
++  /* ---------- Vòng lặp joystick ---------- */
++  let lastT = performance.now();
++  function frame(now) {
++    const dt = Math.min(0.1, (now - lastT) / 1000);
++    lastT = now;
++    const gp = readGamepad();
++    showPad(gp.name);
++
++    if (mode === "joystick" && !document.hidden) {
++      const rate = speed * JOY_RATE;   /* độ/giây khi gạt hết cỡ */
++      sticks.forEach((st, s) => {
++        [["x", st.selx, st.invx], ["y", st.sely, st.invy]].forEach(([axis, sel, inv]) => {
++          const j = +sel.value;
++          if (j < 0) return;
++          const v = clamp(st[axis] + gp.s[s][axis], -1, 1);
++          if (v !== 0) setAngle(j, angles[j] + (inv.checked ? -1 : 1) * v * rate * dt);
++        });
++      });
++      held.forEach((b) => setAngle(+b.dataset.j, angles[+b.dataset.j] + +b.dataset.d * rate * dt));
++      HOLD_JOINTS.forEach((j, k) => { if (gp.hold[k]) setAngle(j, angles[j] + gp.hold[k] * rate * dt); });
++      if (gp.home && !homeWasDown) goHome();
++      homeWasDown = gp.home;
++    }
++    requestAnimationFrame(frame);
++  }
++  requestAnimationFrame(frame);
++
++  /* ---------- Tab, tốc độ, Home ---------- */
++  function setMode(m) {
++    mode = m;
++    $("panelSliders").hidden = m !== "sliders";
++    $("panelJoy").hidden = m !== "joystick";
++    $("tabSliders").setAttribute("aria-selected", m === "sliders");
++    $("tabJoy").setAttribute("aria-selected", m === "joystick");
++  }
++  $("tabSliders").addEventListener("click", () => setMode("sliders"));
++  $("tabJoy").addEventListener("click", () => setMode("joystick"));
++
++  $("speed").addEventListener("input", (e) => {
++    speed = +e.target.value;
++    $("speedOut").textContent = speed + "°/s";
++    speedDirty = true;
++  });
++
++  function goHome() { JOINTS.forEach((j, i) => setAngle(i, j.home)); }
++  $("home").addEventListener("click", goHome);
++
++  /* Rời tab / ẩn trang: nhả hết nút giữ */
++  document.addEventListener("visibilitychange", () => {
++    if (document.hidden) { held.forEach((b) => b.classList.remove("on")); held.clear(); }
++  });
++
++  /* ---------- WebSocket tới server ---------- */
++  let ws = null, wsOpen = false;
++
++  function setPill(id, cls, text) {
++    const p = $(id);
++    p.className = "pill " + cls;
++    p.lastElementChild.textContent = text;
++  }
++  function showStatus(m) {
++    if (m.sim) setPill("pillSerial", "warn", "STM32: mô phỏng (chưa có phần cứng)");
++    else if (m.serial) setPill("pillSerial", "ok", "STM32: " + m.port);
++    else setPill("pillSerial", "", "STM32: chưa mở được " + m.port);
++  }
++
++  function connect() {
++    const proto = location.protocol === "https:" ? "wss:" : "ws:";
++    ws = new WebSocket(`${proto}//${location.host}/ws${location.search}`);
++    ws.onopen = () => { wsOpen = true; setPill("pillWs", "ok", "Máy chủ: đã kết nối"); };
++    ws.onclose = () => {
++      wsOpen = false;
++      setPill("pillWs", "", "Máy chủ: mất kết nối, đang thử lại…");
++      setPill("pillSerial", "", "STM32: —");
++      setTimeout(connect, 1500);
++    };
++    ws.onmessage = (ev) => {
++      let m;
++      try { m = JSON.parse(ev.data); } catch { return; }
++      if (m.type === "state") {
++        applyRemoteAngles(m.a); applySpeed(m.speed); showStatus(m);
++        dirty = false; speedDirty = false;
++      } else if (m.type === "status") {
++        showStatus(m);
++      } else if (m.type === "angles") {
++        if (performance.now() - lastLocalEdit > 400) applyRemoteAngles(m.a);   /* thiết bị khác đang điều khiển */
++      } else if (m.type === "speed") {
++        applySpeed(m.v);
++      }
++    };
++  }
++  connect();
++
++  /* Gửi tối đa ~30 lần/giây, chỉ khi có thay đổi */
++  setInterval(() => {
++    if (!wsOpen) return;
++    if (speedDirty) { ws.send(JSON.stringify({ type: "speed", v: speed })); speedDirty = false; }
++    if (dirty) { ws.send(JSON.stringify({ type: "angles", a: angles.map(round1) })); dirty = false; }
++  }, SEND_MS);
++})();
++</script>
++</body>
++</html>
+-- 
+2.43.0
+
