@@ -1,6 +1,3 @@
-<<<<<<< Updated upstream
-# VDK-Canh-tay-robot
-=======
 # VDK-Canh-tay-robot
 
 ## Tổng quan dự án
@@ -161,4 +158,3 @@ TIM3/TIM4 dang chay PWM 50 Hz, tick 1 MHz. USART2 (PA2/PA3) duoc giu nguyen cho 
 ### Kiem tra
 
 Nap firmware bang STM32CubeIDE/Keil. Cap nguon STM32 va servo, sau do gui `PING` phai nhan `PONG`; gui `STATUS` de xac nhan tat ca khop dang `OFF` luc moi khoi dong. Gui `J1 90` de bat rieng khop 1, roi `J1 +1` va `J1 -1`. Neu khong co tra loi, kiem tra TX/RX dau cheo, chung GND va `BLUETOOTH_BAUDRATE` co khop voi firmware BLE echo da test thanh cong hay khong.
->>>>>>> Stashed changes
