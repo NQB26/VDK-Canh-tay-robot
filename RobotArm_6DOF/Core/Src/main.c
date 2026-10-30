@@ -21,6 +21,11 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+<<<<<<< Updated upstream
+=======
+#include <stdio.h>
+#include <string.h>
+>>>>>>> Stashed changes
 
 /* USER CODE END Includes */
 
@@ -32,6 +37,18 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
+<<<<<<< Updated upstream
+=======
+#define SERVO_COUNT             6U
+#define SERVO_NEUTRAL_DEG       90U
+#define SERVO_MIN_PULSE_US      500U
+#define SERVO_MAX_PULSE_US      2500U
+#define SERVO_UPDATE_PERIOD_MS  20U
+#define BLUETOOTH_BAUDRATE      9600 /* HC-06 UART baud rate confirmed by the user. */
+#define BLUETOOTH_LINE_SIZE    40U
+#define BLUETOOTH_IDLE_MS      100U
+
+>>>>>>> Stashed changes
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -51,6 +68,31 @@ DMA_HandleTypeDef hdma_usart2_rx;
 
 /* USER CODE BEGIN PV */
 
+<<<<<<< Updated upstream
+=======
+/* Each servo starts DISABLED. PWM is enabled only after its first command. */
+static TIM_HandleTypeDef *const servo_timers[SERVO_COUNT] = {
+  &htim3, &htim3, &htim3, &htim3, &htim4, &htim4
+};
+static const uint32_t servo_channels[SERVO_COUNT] = {
+  TIM_CHANNEL_1, TIM_CHANNEL_2, TIM_CHANNEL_3, TIM_CHANNEL_4,
+  TIM_CHANNEL_1, TIM_CHANNEL_2
+};
+/* Adjust individually to match the real mechanical limits before assembly. */
+/* Conservative limits for FIRST TEST only; widen after mechanical calibration. */
+static const uint8_t servo_min_deg[SERVO_COUNT] = {0, 0, 0, 0, 0, 45};
+static const uint8_t servo_max_deg[SERVO_COUNT] = {180, 180, 180, 180, 180, 135};
+static uint8_t servo_enabled[SERVO_COUNT] = {0};
+static uint8_t servo_current_deg[SERVO_COUNT] = {90, 135, 60, 90, 60, 90};
+static uint8_t servo_target_deg[SERVO_COUNT] = {90, 90, 90, 90, 90, 90};
+
+static char bluetooth_line[BLUETOOTH_LINE_SIZE];
+static uint8_t bluetooth_line_length = 0;
+static uint8_t bluetooth_line_overflow = 0;
+static uint32_t bluetooth_last_byte_tick = 0;
+static uint32_t servo_last_update = 0;
+
+>>>>>>> Stashed changes
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -64,11 +106,267 @@ static void MX_USART1_UART_Init(void);
 static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
+<<<<<<< Updated upstream
+=======
+static void Bluetooth_Send(const char *message);
+static void Bluetooth_ProcessRx(void);
+static void Bluetooth_FinishLine(void);
+static void Bluetooth_HandleCommand(char *line);
+static void Servo_Update(void);
+static void Servo_WriteAngle(uint8_t index, uint8_t angle);
+static uint8_t Servo_Enable(uint8_t index);
+
+>>>>>>> Stashed changes
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+<<<<<<< Updated upstream
+=======
+static void Bluetooth_Send(const char *message)
+{
+  HAL_UART_Transmit(&huart1, (uint8_t *)message, (uint16_t)strlen(message), 100);
+}
+
+static void Servo_WriteAngle(uint8_t index, uint8_t angle)
+{
+  /* TIM3/TIM4 tick at 1 MHz: one compare count = 1 microsecond. */
+  uint32_t pulse = SERVO_MIN_PULSE_US +
+    ((uint32_t)angle * (SERVO_MAX_PULSE_US - SERVO_MIN_PULSE_US) + 90U) / 180U;
+  __HAL_TIM_SET_COMPARE(servo_timers[index], servo_channels[index], pulse);
+}
+
+static uint8_t Servo_Enable(uint8_t index)
+{
+  if (servo_enabled[index])
+    return 1U;
+
+  /* The servo's real position is unknown. Its first pulse is neutral (90 deg). */
+  Servo_WriteAngle(index, servo_current_deg[index]);
+  if (HAL_TIM_PWM_Start(servo_timers[index], servo_channels[index]) != HAL_OK)
+    return 0U;
+
+  servo_enabled[index] = 1U;
+  return 1U;
+}
+
+static void Servo_Update(void)
+{
+  uint32_t now = HAL_GetTick();
+  if ((uint32_t)(now - servo_last_update) < SERVO_UPDATE_PERIOD_MS)
+    return;
+  servo_last_update = now;
+
+  for (uint8_t i = 0; i < SERVO_COUNT; i++)
+  {
+    if (!servo_enabled[i] || servo_current_deg[i] == servo_target_deg[i])
+      continue;
+
+    if (servo_current_deg[i] < servo_target_deg[i])
+      servo_current_deg[i]++;
+    else
+      servo_current_deg[i]--;
+
+    Servo_WriteAngle(i, servo_current_deg[i]);
+  }
+}
+
+static char *SkipSpaces(char *s)
+{
+  while (*s == ' ' || *s == '\t')
+    s++;
+  return s;
+}
+
+static uint8_t IsEnd(const char *s)
+{
+  return *s == '\0';
+}
+
+static void Bluetooth_HandleCommand(char *line)
+{
+  char reply[80];
+  char *p = SkipSpaces(line);
+
+  /* Strip trailing spaces, so commands work with CR, LF or CRLF terminals. */
+  size_t len = strlen(p);
+  while (len > 0U && (p[len - 1U] == ' ' || p[len - 1U] == '\t'))
+    p[--len] = '\0';
+  if (len == 0U)
+    return;
+
+  if (strcmp(p, "HELP") == 0 || strcmp(p, "help") == 0)
+  {
+    Bluetooth_Send("J1 90  : set joint 1 to 90 deg\r\n");
+    Bluetooth_Send("J1 +1  : increase joint 1 by 1 deg\r\n");
+    Bluetooth_Send("J1 -1  : decrease joint 1 by 1 deg\r\n");
+    Bluetooth_Send("STATUS | STOP | OFF 1 | OFF ALL | PING\r\n");
+    return;
+  }
+  if (strcmp(p, "PING") == 0 || strcmp(p, "ping") == 0)
+  {
+    Bluetooth_Send("PONG\r\n");
+    return;
+  }
+  if (strcmp(p, "STOP") == 0 || strcmp(p, "stop") == 0)
+  {
+    /* Hold the last commanded angle. This is NOT an emergency power cut. */
+    for (uint8_t i = 0; i < SERVO_COUNT; i++)
+      servo_target_deg[i] = servo_current_deg[i];
+    Bluetooth_Send("OK STOP (holding position)\r\n");
+    return;
+  }
+  if (strcmp(p, "STATUS") == 0 || strcmp(p, "status") == 0)
+  {
+    for (uint8_t i = 0; i < SERVO_COUNT; i++)
+    {
+      snprintf(reply, sizeof(reply), "J%u: %u -> %u, %s\r\n",
+               (unsigned)(i + 1U), (unsigned)servo_current_deg[i],
+               (unsigned)servo_target_deg[i], servo_enabled[i] ? "ON" : "OFF");
+      Bluetooth_Send(reply);
+    }
+    return;
+  }
+  if (strncmp(p, "OFF ", 4) == 0 || strncmp(p, "off ", 4) == 0)
+  {
+    char *arg = SkipSpaces(p + 4);
+    if (strcmp(arg, "ALL") == 0 || strcmp(arg, "all") == 0)
+    {
+      for (uint8_t i = 0; i < SERVO_COUNT; i++)
+      {
+        if (servo_enabled[i])
+          HAL_TIM_PWM_Stop(servo_timers[i], servo_channels[i]);
+        servo_enabled[i] = 0U;
+        servo_current_deg[i] = SERVO_NEUTRAL_DEG;
+        servo_target_deg[i] = SERVO_NEUTRAL_DEG;
+      }
+      Bluetooth_Send("OK OFF ALL (no holding torque)\r\n");
+      return;
+    }
+    if (arg[0] >= '1' && arg[0] <= '6' && IsEnd(arg + 1))
+    {
+      uint8_t i = (uint8_t)(arg[0] - '1');
+      if (servo_enabled[i])
+        HAL_TIM_PWM_Stop(servo_timers[i], servo_channels[i]);
+      servo_enabled[i] = 0U;
+      servo_current_deg[i] = SERVO_NEUTRAL_DEG;
+      servo_target_deg[i] = SERVO_NEUTRAL_DEG;
+      snprintf(reply, sizeof(reply), "OK J%u OFF (no holding torque)\r\n",
+               (unsigned)(i + 1U));
+      Bluetooth_Send(reply);
+      return;
+    }
+    Bluetooth_Send("ERR use OFF 1..6 or OFF ALL\r\n");
+    return;
+  }
+
+  /* One joint per command. An explicit +/- means relative movement. */
+  if ((p[0] == 'J' || p[0] == 'j') &&
+      p[1] >= '1' && p[1] <= '6' &&
+      (p[2] == ' ' || p[2] == '\t'))
+  {
+    uint8_t i = (uint8_t)(p[1] - '1');
+    char *value_text = SkipSpaces(p + 3);
+    int sign = 1;
+    uint8_t relative = 0;
+    if (*value_text == '+' || *value_text == '-')
+    {
+      relative = 1U;
+      if (*value_text == '-')
+        sign = -1;
+      value_text++;
+    }
+    if (*value_text < '0' || *value_text > '9')
+    {
+      Bluetooth_Send("ERR missing angle\r\n");
+      return;
+    }
+    int value = 0;
+    while (*value_text >= '0' && *value_text <= '9')
+    {
+      value = value * 10 + (*value_text++ - '0');
+      if (value > 180)
+      {
+        Bluetooth_Send("ERR angle magnitude must be 0..180\r\n");
+        return;
+      }
+    }
+    if (!IsEnd(SkipSpaces(value_text)))
+    {
+      Bluetooth_Send("ERR invalid angle text\r\n");
+      return;
+    }
+    int target = relative ? (int)servo_target_deg[i] + sign * value : value;
+    if (target < (int)servo_min_deg[i] || target > (int)servo_max_deg[i])
+    {
+      snprintf(reply, sizeof(reply), "ERR J%u allowed range %u..%u deg\r\n",
+               (unsigned)(i + 1U), (unsigned)servo_min_deg[i],
+               (unsigned)servo_max_deg[i]);
+      Bluetooth_Send(reply);
+      return;
+    }
+
+    if (!Servo_Enable(i))
+    {
+      Bluetooth_Send("ERR PWM start failed\r\n");
+      return;
+    }
+    /* Only this joint may be in motion; the others hold their current angles. */
+    for (uint8_t j = 0; j < SERVO_COUNT; j++)
+      if (j != i)
+        servo_target_deg[j] = servo_current_deg[j];
+    servo_target_deg[i] = (uint8_t)target;
+
+    snprintf(reply, sizeof(reply), "OK J%u target=%u deg\r\n",
+             (unsigned)(i + 1U), (unsigned)target);
+    Bluetooth_Send(reply);
+    return;
+  }
+  Bluetooth_Send("ERR unknown command; send HELP\r\n");
+}
+
+static void Bluetooth_FinishLine(void)
+{
+  if (bluetooth_line_overflow)
+    Bluetooth_Send("ERR command too long\r\n");
+  else if (bluetooth_line_length != 0U)
+  {
+    bluetooth_line[bluetooth_line_length] = '\0';
+    Bluetooth_HandleCommand(bluetooth_line);
+  }
+  bluetooth_line_length = 0U;
+  bluetooth_line_overflow = 0U;
+}
+
+static void Bluetooth_ProcessRx(void)
+{
+  uint8_t ch;
+  /* Same simple polling receive path as the successful BLE echo test. */
+  if (HAL_UART_Receive(&huart1, &ch, 1U, 1U) == HAL_OK)
+  {
+    bluetooth_last_byte_tick = HAL_GetTick();
+    if (ch == '\r' || ch == '\n')
+    {
+      Bluetooth_FinishLine();
+    }
+    else if (!bluetooth_line_overflow && ch >= 32U && ch <= 126U)
+    {
+      if (bluetooth_line_length < (BLUETOOTH_LINE_SIZE - 1U))
+        bluetooth_line[bluetooth_line_length++] = (char)ch;
+      else
+        bluetooth_line_overflow = 1U;
+    }
+  }
+  else if ((bluetooth_line_length != 0U || bluetooth_line_overflow) &&
+           (uint32_t)(HAL_GetTick() - bluetooth_last_byte_tick) >= BLUETOOTH_IDLE_MS)
+  {
+    /* Phone apps may send an entire command without CR/LF. */
+    Bluetooth_FinishLine();
+  }
+}
+
+>>>>>>> Stashed changes
 /* USER CODE END 0 */
 
 /**
@@ -107,6 +405,7 @@ int main(void)
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
+<<<<<<< Updated upstream
 	HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
 	HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
 	HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
@@ -114,6 +413,14 @@ int main(void)
 
 	HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_1);
 	HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_2);
+=======
+  /* Do not actuate any joint automatically at boot. */
+  servo_last_update = HAL_GetTick();
+  huart1.Init.BaudRate = BLUETOOTH_BAUDRATE;
+  if (HAL_UART_Init(&huart1) != HAL_OK)
+    Error_Handler();
+  Bluetooth_Send("RobotArm ready. Send PING, STATUS, or J1 90\r\n");
+>>>>>>> Stashed changes
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -123,6 +430,11 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+<<<<<<< Updated upstream
+=======
+    Bluetooth_ProcessRx();
+    Servo_Update();
+>>>>>>> Stashed changes
   }
   /* USER CODE END 3 */
 }
