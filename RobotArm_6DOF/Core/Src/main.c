@@ -21,11 +21,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-<<<<<<< Updated upstream
-=======
 #include <stdio.h>
 #include <string.h>
->>>>>>> Stashed changes
 
 /* USER CODE END Includes */
 
@@ -37,8 +34,6 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-<<<<<<< Updated upstream
-=======
 #define SERVO_COUNT             6U
 #define SERVO_NEUTRAL_DEG       90U
 #define SERVO_MIN_PULSE_US      500U
@@ -48,7 +43,6 @@
 #define BLUETOOTH_LINE_SIZE    40U
 #define BLUETOOTH_IDLE_MS      100U
 
->>>>>>> Stashed changes
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -68,8 +62,6 @@ DMA_HandleTypeDef hdma_usart2_rx;
 
 /* USER CODE BEGIN PV */
 
-<<<<<<< Updated upstream
-=======
 /* Each servo starts DISABLED. PWM is enabled only after its first command. */
 static TIM_HandleTypeDef *const servo_timers[SERVO_COUNT] = {
   &htim3, &htim3, &htim3, &htim3, &htim4, &htim4
@@ -92,7 +84,6 @@ static uint8_t bluetooth_line_overflow = 0;
 static uint32_t bluetooth_last_byte_tick = 0;
 static uint32_t servo_last_update = 0;
 
->>>>>>> Stashed changes
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -106,8 +97,6 @@ static void MX_USART1_UART_Init(void);
 static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
-<<<<<<< Updated upstream
-=======
 static void Bluetooth_Send(const char *message);
 static void Bluetooth_ProcessRx(void);
 static void Bluetooth_FinishLine(void);
@@ -116,14 +105,11 @@ static void Servo_Update(void);
 static void Servo_WriteAngle(uint8_t index, uint8_t angle);
 static uint8_t Servo_Enable(uint8_t index);
 
->>>>>>> Stashed changes
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-<<<<<<< Updated upstream
-=======
 static void Bluetooth_Send(const char *message)
 {
   HAL_UART_Transmit(&huart1, (uint8_t *)message, (uint16_t)strlen(message), 100);
@@ -366,7 +352,6 @@ static void Bluetooth_ProcessRx(void)
   }
 }
 
->>>>>>> Stashed changes
 /* USER CODE END 0 */
 
 /**
@@ -405,7 +390,6 @@ int main(void)
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
-<<<<<<< Updated upstream
 	HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
 	HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
 	HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
@@ -413,14 +397,13 @@ int main(void)
 
 	HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_1);
 	HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_2);
-=======
   /* Do not actuate any joint automatically at boot. */
+	
   servo_last_update = HAL_GetTick();
   huart1.Init.BaudRate = BLUETOOTH_BAUDRATE;
   if (HAL_UART_Init(&huart1) != HAL_OK)
     Error_Handler();
   Bluetooth_Send("RobotArm ready. Send PING, STATUS, or J1 90\r\n");
->>>>>>> Stashed changes
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -430,11 +413,9 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-<<<<<<< Updated upstream
-=======
+
     Bluetooth_ProcessRx();
     Servo_Update();
->>>>>>> Stashed changes
   }
   /* USER CODE END 3 */
 }
