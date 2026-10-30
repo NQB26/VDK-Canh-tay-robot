@@ -87,6 +87,7 @@ Section Cross References
     main.o(i.main) refers to main.o(i.MX_TIM3_Init) for MX_TIM3_Init
     main.o(i.main) refers to main.o(i.MX_TIM4_Init) for MX_TIM4_Init
     main.o(i.main) refers to stm32f4xx_hal_uart.o(i.HAL_UART_Init) for HAL_UART_Init
+    main.o(i.main) refers to stm32f4xx_hal_tim.o(i.HAL_TIM_PWM_Start) for HAL_TIM_PWM_Start
     main.o(i.main) refers to stm32f4xx_hal.o(i.HAL_GetTick) for HAL_GetTick
     main.o(i.main) refers to main.o(i.Bluetooth_Send) for Bluetooth_Send
     main.o(i.main) refers to main.o(i.Bluetooth_ProcessRx) for Bluetooth_ProcessRx
@@ -1331,17 +1332,17 @@ Image Symbol Table
     i.__NVIC_SetPriority                     0x08002eb2   Section        0  stm32f4xx_hal_cortex.o(i.__NVIC_SetPriority)
     __NVIC_SetPriority                       0x08002eb3   Thumb Code    32  stm32f4xx_hal_cortex.o(i.__NVIC_SetPriority)
     i.main                                   0x08002ed4   Section        0  main.o(i.main)
-    x$fpl$fpinit                             0x08003014   Section       10  fpinit.o(x$fpl$fpinit)
-    $v0                                      0x08003014   Number         0  fpinit.o(x$fpl$fpinit)
-    .constdata                               0x08003020   Section       60  main.o(.constdata)
-    servo_min_deg                            0x08003020   Data           6  main.o(.constdata)
-    servo_max_deg                            0x08003026   Data           6  main.o(.constdata)
-    servo_timers                             0x0800302c   Data          24  main.o(.constdata)
-    servo_channels                           0x08003044   Data          24  main.o(.constdata)
-    .constdata                               0x0800305c   Section        8  stm32f4xx_hal_dma.o(.constdata)
-    flagBitshiftOffset                       0x0800305c   Data           8  stm32f4xx_hal_dma.o(.constdata)
-    .constdata                               0x08003064   Section       16  system_stm32f4xx.o(.constdata)
-    .constdata                               0x08003074   Section        8  system_stm32f4xx.o(.constdata)
+    x$fpl$fpinit                             0x08003050   Section       10  fpinit.o(x$fpl$fpinit)
+    $v0                                      0x08003050   Number         0  fpinit.o(x$fpl$fpinit)
+    .constdata                               0x0800305c   Section       60  main.o(.constdata)
+    servo_min_deg                            0x0800305c   Data           6  main.o(.constdata)
+    servo_max_deg                            0x08003062   Data           6  main.o(.constdata)
+    servo_timers                             0x08003068   Data          24  main.o(.constdata)
+    servo_channels                           0x08003080   Data          24  main.o(.constdata)
+    .constdata                               0x08003098   Section        8  stm32f4xx_hal_dma.o(.constdata)
+    flagBitshiftOffset                       0x08003098   Data           8  stm32f4xx_hal_dma.o(.constdata)
+    .constdata                               0x080030a0   Section       16  system_stm32f4xx.o(.constdata)
+    .constdata                               0x080030b0   Section        8  system_stm32f4xx.o(.constdata)
     .data                                    0x20000000   Section       30  main.o(.data)
     bluetooth_line_length                    0x20000000   Data           1  main.o(.data)
     bluetooth_line_overflow                  0x20000001   Data           1  main.o(.data)
@@ -1610,14 +1611,14 @@ Image Symbol Table
     USART1_IRQHandler                        0x08002e99   Thumb Code     6  stm32f4xx_it.o(i.USART1_IRQHandler)
     USART2_IRQHandler                        0x08002ea5   Thumb Code     6  stm32f4xx_it.o(i.USART2_IRQHandler)
     UsageFault_Handler                       0x08002eb1   Thumb Code     2  stm32f4xx_it.o(i.UsageFault_Handler)
-    main                                     0x08002ed5   Thumb Code   250  main.o(i.main)
-    _fp_init                                 0x08003015   Thumb Code    10  fpinit.o(x$fpl$fpinit)
-    __fplib_config_fpu_vfp                   0x0800301d   Thumb Code     0  fpinit.o(x$fpl$fpinit)
-    __fplib_config_pureend_doubles           0x0800301d   Thumb Code     0  fpinit.o(x$fpl$fpinit)
-    AHBPrescTable                            0x08003064   Data          16  system_stm32f4xx.o(.constdata)
-    APBPrescTable                            0x08003074   Data           8  system_stm32f4xx.o(.constdata)
-    Region$$Table$$Base                      0x0800307c   Number         0  anon$$obj.o(Region$$Table)
-    Region$$Table$$Limit                     0x0800309c   Number         0  anon$$obj.o(Region$$Table)
+    main                                     0x08002ed5   Thumb Code   310  main.o(i.main)
+    _fp_init                                 0x08003051   Thumb Code    10  fpinit.o(x$fpl$fpinit)
+    __fplib_config_fpu_vfp                   0x08003059   Thumb Code     0  fpinit.o(x$fpl$fpinit)
+    __fplib_config_pureend_doubles           0x08003059   Thumb Code     0  fpinit.o(x$fpl$fpinit)
+    AHBPrescTable                            0x080030a0   Data          16  system_stm32f4xx.o(.constdata)
+    APBPrescTable                            0x080030b0   Data           8  system_stm32f4xx.o(.constdata)
+    Region$$Table$$Base                      0x080030b8   Number         0  anon$$obj.o(Region$$Table)
+    Region$$Table$$Limit                     0x080030d8   Number         0  anon$$obj.o(Region$$Table)
     uwTickFreq                               0x20000020   Data           1  stm32f4xx_hal.o(.data)
     uwTickPrio                               0x20000024   Data           4  stm32f4xx_hal.o(.data)
     uwTick                                   0x20000028   Data           4  stm32f4xx_hal.o(.data)
@@ -1640,9 +1641,9 @@ Memory Map of the image
 
   Image Entry point : 0x08000199
 
-  Load Region LR_IROM1 (Base: 0x08000000, Size: 0x000030cc, Max: 0x00080000, ABSOLUTE)
+  Load Region LR_IROM1 (Base: 0x08000000, Size: 0x00003108, Max: 0x00080000, ABSOLUTE)
 
-    Execution Region ER_IROM1 (Exec base: 0x08000000, Load base: 0x08000000, Size: 0x0000309c, Max: 0x00080000, ABSOLUTE)
+    Execution Region ER_IROM1 (Exec base: 0x08000000, Load base: 0x08000000, Size: 0x000030d8, Max: 0x00080000, ABSOLUTE)
 
     Exec Addr    Load Addr    Size         Type   Attr      Idx    E Section Name        Object
 
@@ -1825,24 +1826,24 @@ Memory Map of the image
     0x08002eb0   0x08002eb0   0x00000002   Code   RO          223    i.UsageFault_Handler  stm32f4xx_it.o
     0x08002eb2   0x08002eb2   0x00000020   Code   RO         2194    i.__NVIC_SetPriority  stm32f4xx_hal_cortex.o
     0x08002ed2   0x08002ed2   0x00000002   PAD
-    0x08002ed4   0x08002ed4   0x00000140   Code   RO           25    i.main              main.o
-    0x08003014   0x08003014   0x0000000a   Code   RO         3151    x$fpl$fpinit        fz_wm.l(fpinit.o)
-    0x0800301e   0x0800301e   0x00000002   PAD
-    0x08003020   0x08003020   0x0000003c   Data   RO           29    .constdata          main.o
-    0x0800305c   0x0800305c   0x00000008   Data   RO         1884    .constdata          stm32f4xx_hal_dma.o
-    0x08003064   0x08003064   0x00000010   Data   RO         2949    .constdata          system_stm32f4xx.o
-    0x08003074   0x08003074   0x00000008   Data   RO         2950    .constdata          system_stm32f4xx.o
-    0x0800307c   0x0800307c   0x00000020   Data   RO         3207    Region$$Table       anon$$obj.o
+    0x08002ed4   0x08002ed4   0x0000017c   Code   RO           25    i.main              main.o
+    0x08003050   0x08003050   0x0000000a   Code   RO         3151    x$fpl$fpinit        fz_wm.l(fpinit.o)
+    0x0800305a   0x0800305a   0x00000002   PAD
+    0x0800305c   0x0800305c   0x0000003c   Data   RO           29    .constdata          main.o
+    0x08003098   0x08003098   0x00000008   Data   RO         1884    .constdata          stm32f4xx_hal_dma.o
+    0x080030a0   0x080030a0   0x00000010   Data   RO         2949    .constdata          system_stm32f4xx.o
+    0x080030b0   0x080030b0   0x00000008   Data   RO         2950    .constdata          system_stm32f4xx.o
+    0x080030b8   0x080030b8   0x00000020   Data   RO         3207    Region$$Table       anon$$obj.o
 
 
-    Execution Region RW_IRAM1 (Exec base: 0x20000000, Load base: 0x0800309c, Size: 0x000008e0, Max: 0x00020000, ABSOLUTE)
+    Execution Region RW_IRAM1 (Exec base: 0x20000000, Load base: 0x080030d8, Size: 0x000008e0, Max: 0x00020000, ABSOLUTE)
 
     Exec Addr    Load Addr    Size         Type   Attr      Idx    E Section Name        Object
 
-    0x20000000   0x0800309c   0x0000001e   Data   RW           30    .data               main.o
-    0x2000001e   0x080030ba   0x00000002   PAD
-    0x20000020   0x080030bc   0x0000000c   Data   RW         2353    .data               stm32f4xx_hal.o
-    0x2000002c   0x080030c8   0x00000004   Data   RW         2951    .data               system_stm32f4xx.o
+    0x20000000   0x080030d8   0x0000001e   Data   RW           30    .data               main.o
+    0x2000001e   0x080030f6   0x00000002   PAD
+    0x20000020   0x080030f8   0x0000000c   Data   RW         2353    .data               stm32f4xx_hal.o
+    0x2000002c   0x08003104   0x00000004   Data   RW         2951    .data               system_stm32f4xx.o
     0x20000030        -       0x00000190   Zero   RW           26    .bss                main.o
     0x200001c0        -       0x00000060   Zero   RW           27    .bss                main.o
     0x20000220        -       0x00000060   Zero   RW           28    .bss                main.o
@@ -1858,7 +1859,7 @@ Image component sizes
 
       Code (inc. data)   RO Data    RW Data    ZI Data      Debug   Object Name
 
-      2612        802         60         30        592     432376   main.o
+      2672        802         60         30        592     432408   main.o
         64         26        408          0       1536        884   startup_stm32f411xe.o
        144         24          0         12          0       8905   stm32f4xx_hal.o
        198         14          0          0          0      34055   stm32f4xx_hal_cortex.o
@@ -1873,7 +1874,7 @@ Image component sizes
         16          4         24          4          0       1247   system_stm32f4xx.o
 
     ----------------------------------------------------------------------
-     10284       1212        532         48       2128     534437   Object Totals
+     10344       1212        532         48       2128     534469   Object Totals
          0          0         32          0          0          0   (incl. Generated)
         18          0          0          2          0          0   (incl. Padding)
 
@@ -1942,15 +1943,15 @@ Image component sizes
 
       Code (inc. data)   RO Data    RW Data    ZI Data      Debug   
 
-     11912       1254        532         48       2224     526925   Grand Totals
-     11912       1254        532         48       2224     526925   ELF Image Totals
-     11912       1254        532         48          0          0   ROM Totals
+     11972       1254        532         48       2224     526957   Grand Totals
+     11972       1254        532         48       2224     526957   ELF Image Totals
+     11972       1254        532         48          0          0   ROM Totals
 
 ==============================================================================
 
-    Total RO  Size (Code + RO Data)                12444 (  12.15kB)
+    Total RO  Size (Code + RO Data)                12504 (  12.21kB)
     Total RW  Size (RW Data + ZI Data)              2272 (   2.22kB)
-    Total ROM Size (Code + RO Data + RW Data)      12492 (  12.20kB)
+    Total ROM Size (Code + RO Data + RW Data)      12552 (  12.26kB)
 
 ==============================================================================
 
