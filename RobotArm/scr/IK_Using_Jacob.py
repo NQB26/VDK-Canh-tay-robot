@@ -54,7 +54,7 @@ class InverseKinematic(Node):
 
         self.pub = self.create_publisher(
             String,
-            '/robot/servo_angles',
+            '/stm32_cmd',
             10
         )
 
