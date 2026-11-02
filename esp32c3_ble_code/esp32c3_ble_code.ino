@@ -9,16 +9,25 @@
 #define UART_TX   5
 #define PASSKEY   191106
 
+#define LED_PIN        7
+#define LED_ACTIVE_LOW 0      // 0: LED sáng khi chân ở mức cao; đổi thành 1 nếu LED sáng khi chân ở mức thấp
+#define BLINK_MS       100
+
 BLECharacteristic *ch;
 bool connected = false;
 
-class SecCb : public BLESecurityCallbacks {
-  uint32_t onPassKeyRequest() override { return PASSKEY; }
-  void onPassKeyNotify(uint32_t) override {}
-  bool onConfirmPIN(uint32_t) override { return true; }
-  bool onSecurityRequest() override { return true; }
-  void onAuthenticationComplete(esp_ble_auth_cmpl_t) override {}
-};
+void ledWrite(bool on) { digitalWrite(LED_PIN, (on ^ LED_ACTIVE_LOW) ? HIGH : LOW); }
+
+void ledUpdate() {
+  static uint32_t t = 0;
+  static bool state = false;
+  if (connected) { ledWrite(true); return; }          // đã kết nối: sáng ổn định
+  if (millis() - t >= BLINK_MS) {                     // chưa kết nối: nhấp nháy
+    t = millis();
+    state = !state;
+    ledWrite(state);
+  }
+}
 
 class ServerCb : public BLEServerCallbacks {
   void onConnect(BLEServer *) override { connected = true; }
@@ -45,11 +54,16 @@ void flushToBle() {
 }
 
 void setup() {
+  pinMode(LED_PIN, OUTPUT);
   Serial1.begin(UART_BAUD, SERIAL_8N1, UART_RX, UART_TX);
 
   BLEDevice::init("RobotArm");
-  BLEDevice::setEncryptionLevel(ESP_BLE_SEC_ENCRYPT_MITM);
-  BLEDevice::setSecurityCallbacks(new SecCb());
+
+  // Bảo mật: PIN cố định, ghép nối có MITM + bonding + Secure Connections
+  BLESecurity *sec = new BLESecurity();
+  sec->setPassKey(true, PASSKEY);          // true = PIN cố định
+  sec->setCapability(ESP_IO_CAP_OUT);      // ESP32 "hiển thị" PIN, máy điện thoại/PC nhập
+  sec->setAuthenticationMode(true, true, true);   // bonding, MITM, secure connection
 
   BLEServer *server = BLEDevice::createServer();
   server->setCallbacks(new ServerCb());
@@ -60,21 +74,11 @@ void setup() {
       BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE |
       BLECharacteristic::PROPERTY_WRITE_NR | BLECharacteristic::PROPERTY_NOTIFY);
 
-  // Bắt buộc mã hoá mới được đọc/ghi
+  // Bắt buộc liên kết đã mã hoá mới được đọc/ghi
   ch->setAccessPermissions(ESP_GATT_PERM_READ_ENCRYPTED | ESP_GATT_PERM_WRITE_ENCRYPTED);
-  BLE2902 *cccd = new BLE2902();
-  cccd->setAccessPermissions(ESP_GATT_PERM_READ_ENCRYPTED | ESP_GATT_PERM_WRITE_ENCRYPTED);
-  ch->addDescriptor(cccd);
+  ch->addDescriptor(new BLE2902());
   ch->setCallbacks(new WriteCb());
   svc->start();
-
-  // PIN cố định, ESP32 đóng vai thiết bị chỉ hiển thị
-  BLESecurity *sec = new BLESecurity();
-  sec->setAuthenticationMode(ESP_LE_AUTH_REQ_SC_MITM_BOND);
-  sec->setCapability(ESP_IO_CAP_OUT);
-  sec->setInitEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
-  uint32_t passkey = PASSKEY;
-  esp_ble_gap_set_security_param(ESP_BLE_SM_SET_STATIC_PASSKEY, &passkey, sizeof(uint32_t));
 
   BLEAdvertising *adv = BLEDevice::getAdvertising();
   adv->addServiceUUID(BLEUUID("FFE0"));
@@ -83,10 +87,11 @@ void setup() {
 }
 
 void loop() {
-  while (Serial1.available()) {
-    buf[n++] = Serial1.read();
-    lastByte = millis();
-    if (n == sizeof(buf)) flushToBle();
-  }
-  if (n && millis() - lastByte > 5) flushToBle();
+  ledUpdate();
+  // while (Serial1.available()) {
+  //   buf[n++] = Serial1.read();
+  //   lastByte = millis();
+  //   if (n == sizeof(buf)) flushToBle();
+  // }
+  // if (n && millis() - lastByte > 5) flushToBle();
 }

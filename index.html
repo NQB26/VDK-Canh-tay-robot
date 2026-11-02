@@ -190,7 +190,7 @@ dialog::backdrop{background:rgba(0,0,0,.5)}
 
   <div class="bar">
     <button class="btn danger" id="btnStop" title="Gửi STOP: các khớp dừng và giữ vị trí hiện tại">Dừng</button>
-    <button class="btn" id="btnHome" title="Đưa lần lượt từng khớp về 90°">Về vị trí home</button>
+    <button class="btn" id="btnHome" title="Đưa lần lượt từng khớp về góc ban đầu đặt trong firmware">Về vị trí home</button>
     <button class="btn" id="btnSync" title="Gửi STATUS và cập nhật góc theo robot">Đồng bộ góc</button>
     <button class="btn" id="btnOff" title="Gửi OFF ALL: tắt PWM, servo mất lực giữ">Thả lỏng servo</button>
     <span class="grow"></span>
@@ -266,12 +266,13 @@ dialog::backdrop{background:rgba(0,0,0,.5)}
 
 /* ============ Cấu hình khớp (theo firmware main.c) ============ */
 // min/max: giới hạn cứng trong firmware. start: góc ban đầu của servo_current_deg trong firmware.
+// home: vị trí "Về home" = góc ban đầu bạn đặt trong code. Nếu đổi servo_current_deg trong main.c, hãy đổi cả start và home ở đây.
 const JOINTS = [
   {name:'Đế',          sub:'xoay trái/phải', home:90, min:0,  max:180, start:90},
-  {name:'Vai',         sub:'nâng/hạ',        home:90, min:0,  max:180, start:135},
-  {name:'Khuỷu',       sub:'gập/duỗi',       home:90, min:0,  max:180, start:60},
+  {name:'Vai',         sub:'nâng/hạ',        home:135, min:0,  max:180, start:135},
+  {name:'Khuỷu',       sub:'gập/duỗi',       home:60, min:0,  max:180, start:60},
   {name:'Cổ tay nâng', sub:'ngẩng/cúi',      home:90, min:0,  max:180, start:90},
-  {name:'Cổ tay xoay', sub:'xoay',           home:90, min:0,  max:180, start:60},
+  {name:'Cổ tay xoay', sub:'xoay',           home:60, min:0,  max:180, start:60},
   {name:'Kẹp',         sub:'mở/đóng',        home:90, min:45, max:135, start:90},
 ];
 const SERVO_SPEED = 50;       // °/giây: firmware tăng 1° mỗi 20 ms
