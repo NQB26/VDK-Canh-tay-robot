@@ -60,11 +60,13 @@
 #define MAX_Y_SPEED                0.015f
 #define MAX_Z_TURN_SPEED_DPS       20.0f
 
-/* Servo mapping: J1 is base yaw; J2-J4 form the 3-link planar XY chain. */
+/* Servo mapping: J1=base yaw; J2/J3/J5=planar XY chain; J4=wrist; J6=gripper. */
 #define SERVO_BASE_YAW             0U
-#define SERVO_XY_JOINT_1           1U
-#define SERVO_XY_JOINT_2           2U
-#define SERVO_XY_JOINT_3           3U
+#define SERVO_XY_JOINT_1           1U  /* J2 */
+#define SERVO_XY_JOINT_2           2U  /* J3 */
+#define SERVO_WRIST_ROTATION       3U  /* J4: independent wrist rotation */
+#define SERVO_XY_JOINT_3           4U  /* J5 */
+#define SERVO_GRIPPER              5U  /* J6: independent gripper */
 
 /* USER CODE END PD */
 
@@ -89,6 +91,8 @@ DMA_HandleTypeDef hdma_usart2_rx;
 static TIM_HandleTypeDef *const servo_timers[SERVO_COUNT] = {
   &htim3, &htim3, &htim3, &htim3, &htim4, &htim4
 };
+/* J1=TIM3_CH1, J2=TIM3_CH2, J3=TIM3_CH3, J4=TIM3_CH4,
+ * J5=TIM4_CH1, J6=TIM4_CH2. */
 static const uint32_t servo_channels[SERVO_COUNT] = {
   TIM_CHANNEL_1, TIM_CHANNEL_2, TIM_CHANNEL_3, TIM_CHANNEL_4,
   TIM_CHANNEL_1, TIM_CHANNEL_2
@@ -128,7 +132,8 @@ typedef struct
 static BluetoothCommand bluetoothCMD = {0};
 static uint8_t bluetooth_armed = 0U;
 static uint8_t joystick_control_initialized = 0U;
-static float servoX_angle[3] = {135.0f, 60.0f, 90.0f};
+/* Planar IK state is J2, J3, J5 (not consecutive servo indices). */
+static float servoX_angle[3] = {135.0f, 60.0f, 60.0f};
 static float base_yaw_angle = 90.0f;
 static const float direction[3] = {1.0f, 1.0f, 1.0f};
 static const float angle_offset[3] = {0.0f, 0.0f, 0.0f};
@@ -351,8 +356,9 @@ static void Bluetooth_ParseJoystickCommand(char *data)
 
 /*
  * 20-ms joystick update:
- *   X/Y -> Jacobian motion of J2/J3/J4 in the arm's local plane.
+ *   X/Y -> Jacobian motion of J2/J3/J5 in the arm's local plane.
  *   turn -> J1 base rotation about world Z (yaw), not linear Z translation.
+ *   J4 wrist rotation and J6 gripper remain independently controlled.
  */
 static void Bluetooth_Update20ms(void)
 {
@@ -393,7 +399,7 @@ static void Bluetooth_Update20ms(void)
   /* Resynchronise the model after a manual joint/CSV command. */
   if (!joystick_control_initialized)
   {
-    /* The source Jacobian model is calibrated for 45..135 degrees on J2-J4. */
+    /* The planar Jacobian model uses J2, J3 and J5, each limited to 45..135 deg. */
     if (servo_current_deg[SERVO_XY_JOINT_1] < 45U ||
         servo_current_deg[SERVO_XY_JOINT_1] > 135U ||
         servo_current_deg[SERVO_XY_JOINT_2] < 45U ||
@@ -408,9 +414,9 @@ static void Bluetooth_Update20ms(void)
     }
 
     base_yaw_angle = (float)servo_current_deg[SERVO_BASE_YAW];
-    servoX_angle[0] = (float)servo_current_deg[SERVO_XY_JOINT_1];
-    servoX_angle[1] = (float)servo_current_deg[SERVO_XY_JOINT_2];
-    servoX_angle[2] = (float)servo_current_deg[SERVO_XY_JOINT_3];
+    servoX_angle[0] = (float)servo_current_deg[SERVO_XY_JOINT_1]; /* J2 */
+    servoX_angle[1] = (float)servo_current_deg[SERVO_XY_JOINT_2]; /* J3 */
+    servoX_angle[2] = (float)servo_current_deg[SERVO_XY_JOINT_3]; /* J5 */
     joystick_control_initialized = 1U;
   }
 
@@ -511,7 +517,8 @@ static void Bluetooth_HandleCommand(char *line)
   {
     Bluetooth_Send("Joystick: J,x,y,turn,enable (-100..100)\r\n");
     Bluetooth_Send("Release first: J,0,0,0,0 then enable=1\r\n");
-    Bluetooth_Send("XY=planar Jacobian; turn=base yaw about Z\r\n");
+    Bluetooth_Send("XY=planar Jacobian on J2/J3/J5; turn=J1 base yaw\r\n");
+    Bluetooth_Send("J4 controls wrist; J6 controls gripper\r\n");
     Bluetooth_Send("J1 90 / J1 +10 / J1 -10 : single joint\r\n");
     Bluetooth_Send("STATUS | STOP | OFF 1 | OFF ALL | PING\r\n");
     Bluetooth_Send("Six angles CSV is accepted on USART2 at 115200\r\n");
